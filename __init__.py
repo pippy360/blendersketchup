@@ -816,6 +816,7 @@ class SketchUpDrawTool(WorkSpaceTool):
     bl_label = "SketchUp Draw Tool"
     bl_description = "Draw lines and outlines in a SketchUp-like manner"
     bl_icon = "ops.curve.draw"
+    bl_cursor = 'PAINT_BRUSH'
     bl_widget = None
     bl_keymap = (
         ("sketchup.draw_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
