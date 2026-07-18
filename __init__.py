@@ -692,6 +692,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
         elif event.type == 'MOUSEMOVE':
             self.update_mouse_pos(context, event)
+            return {'RUNNING_MODAL'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             for region in context.area.regions:
