@@ -96,64 +96,111 @@ def draw_callback_2d(self, context):
         blf.draw(font_id, text)
         blf.disable(font_id, blf.SHADOW)
 
-def apply_native_snapping(context, event, hit, location, index, obj, matrix):
-    if not hit:
-        return location
-        
+def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     use_snap = context.scene.tool_settings.use_snap
     if event.ctrl:
         use_snap = not use_snap
         
-    if use_snap and obj.type == 'MESH':
-        region = context.region
-        rv3d = context.region_data
-        mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+    if not use_snap:
+        return location
         
-        snap_elements = context.scene.tool_settings.snap_elements
-        mesh = obj.data
-        poly = mesh.polygons[index]
-        snap_radius_px = 30.0
-        
-        if 'VERTEX' in snap_elements:
-            closest_dist = float('inf')
-            closest_v = location
-            for v_idx in poly.vertices:
-                v_world = matrix @ mesh.vertices[v_idx].co
-                dist = (v_world - location).length
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest_v = v_world
-            
-            v_2d = location_3d_to_region_2d(region, rv3d, closest_v)
-            if v_2d and (v_2d - mouse_2d).length < snap_radius_px:
-                return closest_v
+    region = context.region
+    rv3d = context.region_data
+    mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+    snap_elements = context.scene.tool_settings.snap_elements
+    snap_radius_px = 30.0
+    
+    best_snap = None
+    best_dist = snap_radius_px
+
+    def check_vertex(v_world):
+        nonlocal best_snap, best_dist
+        v_2d = location_3d_to_region_2d(region, rv3d, v_world)
+        if v_2d:
+            dist = (v_2d - mouse_2d).length
+            if dist < best_dist:
+                best_dist = dist
+                best_snap = v_world
+
+    def check_edge(v1_world, v2_world):
+        nonlocal best_snap, best_dist
+        if 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
+            midpoint = (v1_world + v2_world) * 0.5
+            p_2d = location_3d_to_region_2d(region, rv3d, midpoint)
+            if p_2d:
+                dist = (p_2d - mouse_2d).length
+                if dist < best_dist:
+                    best_dist = dist
+                    best_snap = midpoint
 
         if 'EDGE' in snap_elements:
-            closest_dist = float('inf')
-            closest_pt = location
-            for loop_idx in poly.loop_indices:
-                v1_idx = mesh.loops[loop_idx].vertex_index
-                next_loop_idx = poly.loop_start + (loop_idx - poly.loop_start + 1) % poly.loop_total
-                v2_idx = mesh.loops[next_loop_idx].vertex_index
-                
-                v1_world = matrix @ mesh.vertices[v1_idx].co
-                v2_world = matrix @ mesh.vertices[v2_idx].co
-                
-                pt = geometry.intersect_point_line(location, v1_world, v2_world)[0]
+            ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_2d)
+            view_vector = region_2d_to_vector_3d(region, rv3d, mouse_2d)
+            line_pts = geometry.intersect_line_line(v1_world, v2_world, ray_origin, ray_origin + view_vector * 10000)
+            if line_pts:
+                pt = line_pts[0]
                 vec1 = pt - v1_world
                 vec2 = v2_world - v1_world
                 if vec1.dot(vec2) < 0: pt = v1_world
                 elif vec1.length > vec2.length: pt = v2_world
                     
-                dist = (pt - location).length
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest_pt = pt
-                    
-            p_2d = location_3d_to_region_2d(region, rv3d, closest_pt)
-            if p_2d and (p_2d - mouse_2d).length < snap_radius_px:
-                return closest_pt
+                p_2d = location_3d_to_region_2d(region, rv3d, pt)
+                if p_2d:
+                    dist = (p_2d - mouse_2d).length
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_snap = pt
+
+    # 1. Check all low-poly visible objects (catches all isolated lines and previous drawings)
+    for o in context.view_layer.objects:
+        if o.type == 'MESH' and o.visible_get():
+            mesh = o.data
+            if len(mesh.vertices) < 10000:
+                mat = o.matrix_world
+                if 'VERTEX' in snap_elements:
+                    for v in mesh.vertices:
+                        check_vertex(mat @ v.co)
+                if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
+                    for edge in mesh.edges:
+                        v1 = mat @ mesh.vertices[edge.vertices[0]].co
+                        v2 = mat @ mesh.vertices[edge.vertices[1]].co
+                        check_edge(v1, v2)
+
+    # 2. Check the raycast hit polygon (crucial for high-poly meshes skipped above)
+    if hit and obj and obj.type == 'MESH' and len(obj.data.vertices) >= 10000:
+        poly = None
+        try:
+            depsgraph = context.view_layer.depsgraph
+            eval_obj = obj.evaluated_get(depsgraph)
+            mesh = eval_obj.data
+            poly = mesh.polygons[index]
+        except Exception:
+            try:
+                mesh = obj.data
+                poly = mesh.polygons[index]
+            except Exception:
+                pass
                 
+        if poly is not None:
+            mat = obj.matrix_world
+            if 'VERTEX' in snap_elements:
+                for v_idx in poly.vertices:
+                    check_vertex(mat @ mesh.vertices[v_idx].co)
+            if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
+                for loop_idx in poly.loop_indices:
+                    v1_idx = mesh.loops[loop_idx].vertex_index
+                    next_loop_idx = poly.loop_start + (loop_idx - poly.loop_start + 1) % poly.loop_total
+                    v2_idx = mesh.loops[next_loop_idx].vertex_index
+                    v1 = mat @ mesh.vertices[v1_idx].co
+                    v2 = mat @ mesh.vertices[v2_idx].co
+                    check_edge(v1, v2)
+
+    if best_snap is not None:
+        return best_snap
+
+    if hit and 'FACE' in snap_elements:
+        return location
+
     return location
 
 def get_mouse_3d_pos(context, event, last_point=None):
@@ -179,7 +226,19 @@ def get_mouse_3d_pos(context, event, last_point=None):
 
     if last_point is None:
         current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
-        return apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        final_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        
+        use_snap = context.scene.tool_settings.use_snap
+        if event.ctrl: use_snap = not use_snap
+        if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and final_pos == raw_pos:
+            grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
+            
+            final_pos = Vector((
+                round(final_pos.x / grid_scale) * grid_scale,
+                round(final_pos.y / grid_scale) * grid_scale,
+                round(final_pos.z / grid_scale) * grid_scale
+            ))
+        return final_pos
 
     # 2. Determine Active Constraint Axis
     active_axis = None
@@ -273,18 +332,51 @@ def get_mouse_3d_pos(context, event, last_point=None):
             constrained_pos = last_point + active_axis * (raw_pos - last_point).length
             
         # SKETCHUP INFERENCE: If we hover over a vertex while locked, project it onto our axis
-        snap_pos = apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        snap_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
         if snap_pos != raw_pos:
             vec_to_snap = snap_pos - last_point
             proj_dist = vec_to_snap.dot(active_axis)
-            return last_point + active_axis * proj_dist
+            final_pos = last_point + active_axis * proj_dist
+        else:
+            final_pos = constrained_pos
             
-        return constrained_pos
+        # Grid Snapping along axis
+        use_snap = context.scene.tool_settings.use_snap
+        if event.ctrl: use_snap = not use_snap
+        if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and snap_pos == raw_pos:
+            grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
+            
+            # Always use absolute grid snapping for drawing to align endpoints to the grid
+            if abs(active_axis.x) > 0.5:
+                target = round(final_pos.x / grid_scale) * grid_scale
+                proj_dist = (target - last_point.x) / active_axis.x if active_axis.x != 0 else 0
+            elif abs(active_axis.y) > 0.5:
+                target = round(final_pos.y / grid_scale) * grid_scale
+                proj_dist = (target - last_point.y) / active_axis.y if active_axis.y != 0 else 0
+            else:
+                target = round(final_pos.z / grid_scale) * grid_scale
+                proj_dist = (target - last_point.z) / active_axis.z if active_axis.z != 0 else 0
+            final_pos = last_point + active_axis * proj_dist
+
+        return final_pos
 
     current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
 
-    # 4. Native Snapping (Unconstrained)
-    return apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
+    # 4. Unconstrained Snapping
+    final_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+    
+    use_snap = context.scene.tool_settings.use_snap
+    if event.ctrl: use_snap = not use_snap
+    if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and final_pos == raw_pos:
+        grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
+        
+        final_pos = Vector((
+            round(final_pos.x / grid_scale) * grid_scale,
+            round(final_pos.y / grid_scale) * grid_scale,
+            round(final_pos.z / grid_scale) * grid_scale
+        ))
+        
+    return final_pos
 
 # --- Operators ---
 
