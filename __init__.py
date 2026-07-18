@@ -378,7 +378,11 @@ def get_mouse_3d_pos(context, event, last_point=None):
             ))
         return final_pos, s_type
 
-    # 2. Determine Active Constraint Axis
+    # 2. Check Geometry Snapping FIRST
+    geo_snap_pos, geo_snap_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+    has_geo_snap = (geo_snap_pos != raw_pos)
+
+    # 3. Determine Active Constraint Axis
     active_axis = None
     
     if manual_axis_lock == 'X':
@@ -423,32 +427,38 @@ def get_mouse_3d_pos(context, event, last_point=None):
         active_axis = shift_locked_axis
     else:
         shift_locked_axis = None
-        # Auto-snapping using 2D screen projection of axes
-        last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
-        mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
-        
-        if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
-            mouse_dir_2d = (mouse_2d - last_pt_2d).normalized()
-            cam_pos = rv3d.view_matrix.inverted().translation
-            dist_to_cam = (last_point - cam_pos).length
+        # ONLY auto-snap to axis if we didn't snap to geometry!
+        if not has_geo_snap:
+            last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
+            mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
             
-            best_axis = None
-            best_dot = -1
-            for axis in primary_axes:
-                ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
-                if ax_pt_2d:
-                    ax_dir_2d = (ax_pt_2d - last_pt_2d)
-                    if ax_dir_2d.length > 0.001:
-                        ax_dir_2d.normalize()
-                        d = mouse_dir_2d.dot(ax_dir_2d)
-                        if d > best_dot:
-                            best_dot = d
-                            best_axis = axis
-            
-            if best_dot > 0.985: # Roughly 10 degrees threshold in 2D space
-                active_axis = best_axis
+            if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
+                cam_pos = rv3d.view_matrix.inverted().translation
+                dist_to_cam = (last_point - cam_pos).length
+                
+                best_axis = None
+                best_dist = 20.0 # 20 pixels max perpendicular distance
+                
+                for axis in primary_axes:
+                    ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
+                    if ax_pt_2d:
+                        ax_dir_2d = (ax_pt_2d - last_pt_2d)
+                        if ax_dir_2d.length > 0.001:
+                            ax_dir_2d.normalize()
+                            
+                            vec = mouse_2d - last_pt_2d
+                            proj_len = vec.dot(ax_dir_2d)
+                            if proj_len > 0: # Only snap if pointing in the positive direction of this axis vector
+                                perp_vec = vec - ax_dir_2d * proj_len
+                                perp_dist = perp_vec.length
+                                if perp_dist < best_dist:
+                                    best_dist = perp_dist
+                                    best_axis = axis
+                
+                if best_axis is not None:
+                    active_axis = best_axis
 
-    # 3. Apply Constraint
+    # 4. Apply Constraint
     if active_axis is not None:
         abs_x = abs(active_axis.x)
         abs_y = abs(active_axis.y)
@@ -469,13 +479,13 @@ def get_mouse_3d_pos(context, event, last_point=None):
         else:
             constrained_pos = last_point + active_axis * (raw_pos - last_point).length
             
-        # SKETCHUP INFERENCE: If we hover over a vertex while locked, project it onto our axis
-        snap_pos, s_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
-        if snap_pos != raw_pos:
-            vec_to_snap = snap_pos - last_point
+        # SKETCHUP INFERENCE: Project geo_snap_pos onto the active axis
+        if has_geo_snap:
+            vec_to_snap = geo_snap_pos - last_point
             proj_dist = vec_to_snap.dot(active_axis)
             final_pos = last_point + active_axis * proj_dist
-            constraint_snap_point = snap_pos
+            constraint_snap_point = geo_snap_pos
+            s_type = geo_snap_type
         else:
             final_pos = constrained_pos
             s_type = None
@@ -484,7 +494,7 @@ def get_mouse_3d_pos(context, event, last_point=None):
         # Grid Snapping along axis
         use_snap = context.scene.tool_settings.use_snap
         if event.ctrl: use_snap = not use_snap
-        if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and snap_pos == raw_pos:
+        if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and not has_geo_snap:
             grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
             
             # Always use absolute grid snapping for drawing to align endpoints to the grid
@@ -502,24 +512,31 @@ def get_mouse_3d_pos(context, event, last_point=None):
 
         return final_pos, s_type
 
-    current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
-
-    # 4. Unconstrained Snapping
-    final_pos, s_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
-    
-    use_snap = context.scene.tool_settings.use_snap
-    if event.ctrl: use_snap = not use_snap
-    if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and final_pos == raw_pos:
-        grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
+    else:
+        # No axis lock (either unconstrained or snapped to geometry)
+        current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
+        constraint_snap_point = None
         
-        s_type = 'GRID'
-        final_pos = Vector((
-            round(final_pos.x / grid_scale) * grid_scale,
-            round(final_pos.y / grid_scale) * grid_scale,
-            round(final_pos.z / grid_scale) * grid_scale
-        ))
-        
-    return final_pos, s_type
+        if has_geo_snap:
+            final_pos = geo_snap_pos
+            s_type = geo_snap_type
+        else:
+            final_pos = raw_pos
+            s_type = None
+            
+        use_snap = context.scene.tool_settings.use_snap
+        if event.ctrl: use_snap = not use_snap
+        if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and not has_geo_snap:
+            grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
+            
+            s_type = 'GRID'
+            final_pos = Vector((
+                round(final_pos.x / grid_scale) * grid_scale,
+                round(final_pos.y / grid_scale) * grid_scale,
+                round(final_pos.z / grid_scale) * grid_scale
+            ))
+            
+        return final_pos, s_type
 
 # --- Operators ---
 
