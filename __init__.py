@@ -680,7 +680,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         if active_tool and active_tool.idname != "sketchup.draw_tool_v2":
             self.end_tool(context)
             self.report({'INFO'}, "SketchUp Draw Tool Deactivated")
-            return {'CANCELLED'}
+            return {'FINISHED'}
             
         context.area.tag_redraw()
 
@@ -723,10 +723,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
         elif event.type == 'ESC' and event.value == 'PRESS':
             self.end_tool(context)
-            self.report({'INFO'}, "Cancelled SketchUp Draw Tool")
-            return {'CANCELLED'}
+            self.report({'INFO'}, "Finished SketchUp Draw Tool")
+            return {'FINISHED'}
             
         elif event.type == 'Z' and event.value == 'PRESS' and (event.ctrl or event.oskey):
+            if event.shift:
+                self.report({'WARNING'}, "Redo not supported while drawing")
+                return {'RUNNING_MODAL'}
+                
             if len(self.undo_history) > 0:
                 last_action = self.undo_history.pop()
                 
