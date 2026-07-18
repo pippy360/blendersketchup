@@ -33,6 +33,7 @@ shift_locked_axis = None # Vector
 current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black default
 typed_length = ""
 snap_type = None
+constraint_snap_point = None
 
 primary_axes = [
     Vector((1,0,0)), Vector((-1,0,0)),
@@ -48,6 +49,7 @@ snap_dirs = [v.normalized() for v in [
 ]]
 
 def draw_callback_3d(self, context):
+    global constraint_snap_point
     if not draw_points or not mouse_pos:
         return
         
@@ -65,6 +67,21 @@ def draw_callback_3d(self, context):
         
     batch.draw(shader)
     gpu.state.line_width_set(1.0)
+    
+    if constraint_snap_point is not None:
+        # Draw a dotted line from constraint_snap_point to mouse_pos
+        dist = (constraint_snap_point - mouse_pos).length
+        num_segments = max(2, int(dist / 0.05)) # Dotted every 5cm
+        dot_coords = []
+        for i in range(0, num_segments, 2):
+            p1 = mouse_pos.lerp(constraint_snap_point, i / num_segments)
+            p2 = mouse_pos.lerp(constraint_snap_point, (i + 1) / num_segments)
+            dot_coords.extend([p1, p2])
+            
+        if dot_coords:
+            dot_batch = batch_for_shader(shader, 'LINES', {"pos": dot_coords})
+            shader.uniform_float("color", current_axis_color)
+            dot_batch.draw(shader)
 
 def draw_callback_2d(self, context):
     global mouse_pos, last_point, typed_length, snap_type
@@ -107,24 +124,29 @@ def draw_callback_2d(self, context):
             except ValueError:
                 shader = gpu.shader.from_builtin('UNIFORM_COLOR')
                 
-            pos_2d = location_3d_to_region_2d(context.region, context.region_data, mouse_pos)
+            if constraint_snap_point:
+                pos_2d = location_3d_to_region_2d(context.region, context.region_data, constraint_snap_point)
+                label_pos_2d = location_3d_to_region_2d(context.region, context.region_data, mouse_pos)
+            else:
+                pos_2d = location_3d_to_region_2d(context.region, context.region_data, mouse_pos)
+                label_pos_2d = pos_2d
                 
             if snap_type == 'VERTEX':
                 color = (0.2, 0.8, 0.2, 1.0)
                 shape = 'CIRCLE'
-                label = "Endpoint"
+                label = "Constrained on Line from Point" if constraint_snap_point else "Endpoint"
             elif snap_type == 'MIDPOINT':
                 color = (0.0, 0.8, 0.8, 1.0)
                 shape = 'CIRCLE'
-                label = "Midpoint"
+                label = "Constrained on Line from Midpoint" if constraint_snap_point else "Midpoint"
             elif snap_type == 'EDGE':
                 color = (0.8, 0.2, 0.2, 1.0)
                 shape = 'SQUARE'
-                label = "On Edge"
+                label = "Constrained on Line" if constraint_snap_point else "On Edge"
             elif snap_type == 'FACE':
                 color = (0.2, 0.2, 0.8, 1.0)
                 shape = 'SQUARE'
-                label = "On Face"
+                label = "Constrained on Line from Face" if constraint_snap_point else "On Face"
             elif snap_type == 'GRID':
                 color = (0.5, 0.5, 0.5, 1.0)
                 shape = 'CIRCLE'
@@ -172,8 +194,8 @@ def draw_callback_2d(self, context):
                 dims = blf.dimensions(font_id, label)
                 width = dims[0] + 8
                 height = dims[1] + 8
-                x = float(pos_2d[0] + 15)
-                y = float(pos_2d[1] - 10)
+                x = float(label_pos_2d[0] + 15) if label_pos_2d else float(pos_2d[0] + 15)
+                y = float(label_pos_2d[1] - 10) if label_pos_2d else float(pos_2d[1] - 10)
                 box_coords = [
                     (x, y), (x + width, y), (x + width, y + height), (x, y + height)
                 ]
@@ -309,7 +331,9 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     return location, None
 
 def get_mouse_3d_pos(context, event, last_point=None):
-    global manual_axis_lock, shift_locked_axis, current_axis_color
+    global manual_axis_lock, shift_locked_axis, current_axis_color, constraint_snap_point
+    
+    constraint_snap_point = None
 
     region = context.region
     rv3d = context.region_data
@@ -443,9 +467,11 @@ def get_mouse_3d_pos(context, event, last_point=None):
             vec_to_snap = snap_pos - last_point
             proj_dist = vec_to_snap.dot(active_axis)
             final_pos = last_point + active_axis * proj_dist
+            constraint_snap_point = snap_pos
         else:
             final_pos = constrained_pos
             s_type = None
+            constraint_snap_point = None
             
         # Grid Snapping along axis
         use_snap = context.scene.tool_settings.use_snap
