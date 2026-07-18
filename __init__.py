@@ -695,6 +695,10 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
+               event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
+                return {'PASS_THROUGH'}
+                
             for region in context.area.regions:
                 if region.type != 'WINDOW':
                     if region.x <= event.mouse_x <= region.x + region.width and \
