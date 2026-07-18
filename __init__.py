@@ -241,31 +241,32 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     snap_elements = context.scene.tool_settings.snap_elements
     snap_radius_px = 30.0
     
-    best_snap = None
-    best_snap_type = None
-    best_dist = snap_radius_px
+    best_vertex = None
+    best_vertex_dist = 20.0
+    best_mid = None
+    best_mid_dist = 20.0
+    best_edge = None
+    best_edge_dist = 15.0
 
     def check_vertex(v_world):
-        nonlocal best_snap, best_dist, best_snap_type
+        nonlocal best_vertex, best_vertex_dist
         v_2d = location_3d_to_region_2d(region, rv3d, v_world)
         if v_2d:
             dist = (v_2d - mouse_2d).length
-            if dist < best_dist:
-                best_dist = dist
-                best_snap = v_world
-                best_snap_type = 'VERTEX'
+            if dist < best_vertex_dist:
+                best_vertex_dist = dist
+                best_vertex = v_world
 
     def check_edge(v1_world, v2_world):
-        nonlocal best_snap, best_dist, best_snap_type
+        nonlocal best_mid, best_mid_dist, best_edge, best_edge_dist
         if 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
             midpoint = (v1_world + v2_world) * 0.5
             p_2d = location_3d_to_region_2d(region, rv3d, midpoint)
             if p_2d:
                 dist = (p_2d - mouse_2d).length
-                if dist < best_dist:
-                    best_dist = dist
-                    best_snap = midpoint
-                    best_snap_type = 'MIDPOINT'
+                if dist < best_mid_dist:
+                    best_mid_dist = dist
+                    best_mid = midpoint
 
         if 'EDGE' in snap_elements:
             ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_2d)
@@ -281,10 +282,9 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
                 p_2d = location_3d_to_region_2d(region, rv3d, pt)
                 if p_2d:
                     dist = (p_2d - mouse_2d).length
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_snap = pt
-                        best_snap_type = 'EDGE'
+                    if dist < best_edge_dist:
+                        best_edge_dist = dist
+                        best_edge = pt
 
     # 1. Check all low-poly visible objects (catches all isolated lines and previous drawings)
     for o in context.view_layer.objects:
@@ -330,12 +330,15 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
                     v2 = mat @ mesh.vertices[v2_idx].co
                     check_edge(v1, v2)
 
-    if best_snap is not None:
-        return best_snap, best_snap_type
-
+    if best_vertex:
+        return best_vertex, 'VERTEX'
+    if best_mid:
+        return best_mid, 'MIDPOINT'
+    if best_edge:
+        return best_edge, 'EDGE'
     if hit and 'FACE' in snap_elements:
         return location, 'FACE'
-
+        
     return location, None
 
 def get_mouse_3d_pos(context, event, last_point=None):
