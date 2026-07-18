@@ -34,6 +34,8 @@ current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black default
 typed_length = ""
 snap_type = None
 constraint_snap_point = None
+hover_start_time = 0.0
+hover_last_pos = None
 
 primary_axes = [
     Vector((1,0,0)), Vector((-1,0,0)),
@@ -84,9 +86,14 @@ def draw_callback_3d(self, context):
             dot_batch.draw(shader)
 
 def draw_callback_2d(self, context):
-    global mouse_pos, last_point, typed_length, snap_type
+    global mouse_pos, last_point, typed_length, snap_type, hover_start_time, hover_last_pos
     if not mouse_pos:
         return
+        
+    import time
+    if hover_last_pos is None or (hover_last_pos - mouse_pos).length > 0.05:
+        hover_last_pos = mouse_pos.copy()
+        hover_start_time = time.time()
 
     if draw_points:
         length = (mouse_pos - draw_points[-1]).length
@@ -188,29 +195,30 @@ def draw_callback_2d(self, context):
                     batch_outline.draw(shader)
                 gpu.state.blend_set('NONE')
 
-                font_id = 0
-                try: blf.size(font_id, 14, 72)
-                except TypeError: blf.size(font_id, 14)
-                dims = blf.dimensions(font_id, label)
-                width = dims[0] + 8
-                height = dims[1] + 8
-                x = float(label_pos_2d[0] + 15) if label_pos_2d else float(pos_2d[0] + 15)
-                y = float(label_pos_2d[1] - 10) if label_pos_2d else float(pos_2d[1] - 10)
-                box_coords = [
-                    (x, y), (x + width, y), (x + width, y + height), (x, y + height)
-                ]
-                gpu.state.blend_set('ALPHA')
-                batch_bg = batch_for_shader(shader, 'TRI_FAN', {"pos": box_coords})
-                shader.bind()
-                shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
-                batch_bg.draw(shader)
-                batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": box_coords})
-                shader.uniform_float("color", (0.5, 0.5, 0.5, 1.0))
-                batch_outline.draw(shader)
-                gpu.state.blend_set('NONE')
-                blf.position(font_id, x + 4, y + 4, 0.0)
-                blf.color(font_id, 0.0, 0.0, 0.0, 1.0)
-                blf.draw(font_id, label)
+                if time.time() - hover_start_time > 10.0:
+                    font_id = 0
+                    try: blf.size(font_id, 14, 72)
+                    except TypeError: blf.size(font_id, 14)
+                    dims = blf.dimensions(font_id, label)
+                    width = dims[0] + 8
+                    height = dims[1] + 8
+                    x = float(label_pos_2d[0] + 15) if label_pos_2d else float(pos_2d[0] + 15)
+                    y = float(label_pos_2d[1] - 10) if label_pos_2d else float(pos_2d[1] - 10)
+                    box_coords = [
+                        (x, y), (x + width, y), (x + width, y + height), (x, y + height)
+                    ]
+                    gpu.state.blend_set('ALPHA')
+                    batch_bg = batch_for_shader(shader, 'TRI_FAN', {"pos": box_coords})
+                    shader.bind()
+                    shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
+                    batch_bg.draw(shader)
+                    batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": box_coords})
+                    shader.uniform_float("color", (0.5, 0.5, 0.5, 1.0))
+                    batch_outline.draw(shader)
+                    gpu.state.blend_set('NONE')
+                    blf.position(font_id, x + 4, y + 4, 0.0)
+                    blf.color(font_id, 0.0, 0.0, 0.0, 1.0)
+                    blf.draw(font_id, label)
         except Exception as e:
             font_id = 0
             blf.position(font_id, 50.0, 50.0, 0.0)
