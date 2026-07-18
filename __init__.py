@@ -654,6 +654,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def modal(self, context, event):
         global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length
+        
+        # Check if the user selected a different tool
+        active_tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+        if active_tool and active_tool.idname != "sketchup.draw_tool_v2":
+            self.end_tool(context)
+            self.report({'INFO'}, "SketchUp Draw Tool Deactivated")
+            return {'CANCELLED'}
+            
         context.area.tag_redraw()
 
         if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT'}:
