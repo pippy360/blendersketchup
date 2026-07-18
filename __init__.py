@@ -818,7 +818,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.update_mouse_pos(context, event)
             self.create_mesh_object(context)
             
-            if mouse_pos:
+            if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and mouse_pos:
                 self.add_point(mouse_pos)
                 
             self.add_draw_handler(context)
@@ -843,6 +843,7 @@ class SketchUpDrawTool(WorkSpaceTool):
     bl_cursor = 'PAINT_BRUSH'
     bl_widget = None
     bl_keymap = (
+        ("sketchup.draw_tool", {"type": 'MOUSEMOVE', "value": 'ANY'}, None),
         ("sketchup.draw_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
     )
 
