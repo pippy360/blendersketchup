@@ -32,6 +32,7 @@ manual_axis_lock = None  # None, 'X', 'Y', 'Z'
 shift_locked_axis = None # Vector
 current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black default
 typed_length = ""
+snap_type = None
 
 primary_axes = [
     Vector((1,0,0)), Vector((-1,0,0)),
@@ -66,35 +67,135 @@ def draw_callback_3d(self, context):
     gpu.state.line_width_set(1.0)
 
 def draw_callback_2d(self, context):
-    if not draw_points or not mouse_pos:
+    global mouse_pos, last_point, typed_length, snap_type
+    if not mouse_pos:
         return
 
-    length = (mouse_pos - draw_points[-1]).length
-    mid_point = (mouse_pos + draw_points[-1]) / 2.0
-    
-    pos_2d = location_3d_to_region_2d(context.region, context.region_data, mid_point)
-    
-    if pos_2d:
-        font_id = 0
-        blf.position(font_id, float(pos_2d[0] + 15), float(pos_2d[1] + 15), 0.0)
-        try:
-            blf.size(font_id, 20, 72)
-        except TypeError:
-            blf.size(font_id, 20)
+    if draw_points:
+        length = (mouse_pos - draw_points[-1]).length
+        mid_point = (mouse_pos + draw_points[-1]) / 2.0
         
-        blf.enable(font_id, blf.SHADOW)
-        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 1.0)
-        blf.shadow_offset(font_id, 1, -1)
+        pos_2d = location_3d_to_region_2d(context.region, context.region_data, mid_point)
         
-        if typed_length:
-            blf.color(font_id, 1.0, 0.8, 0.2, 1.0)
-            text = f"Length: {typed_length}_"
-        else:
-            blf.color(font_id, 1.0, 1.0, 1.0, 1.0) 
-            text = f"{length:.2f} m"
+        if pos_2d:
+            font_id = 0
+            blf.position(font_id, float(pos_2d[0] + 15), float(pos_2d[1] + 15), 0.0)
+            try:
+                blf.size(font_id, 20, 72)
+            except TypeError:
+                blf.size(font_id, 20)
             
-        blf.draw(font_id, text)
-        blf.disable(font_id, blf.SHADOW)
+            blf.enable(font_id, blf.SHADOW)
+            blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 1.0)
+            blf.shadow_offset(font_id, 1, -1)
+            
+            if typed_length:
+                blf.color(font_id, 1.0, 0.8, 0.2, 1.0)
+                text = f"Length: {typed_length}_"
+            else:
+                blf.color(font_id, 1.0, 1.0, 1.0, 1.0) 
+                text = f"{length:.2f} m"
+                
+            blf.draw(font_id, text)
+            blf.disable(font_id, blf.SHADOW)
+
+    if snap_type:
+        try:
+            import math
+            try:
+                shader = gpu.shader.from_builtin('2D_UNIFORM_COLOR')
+            except ValueError:
+                shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+                
+            pos_2d = location_3d_to_region_2d(context.region, context.region_data, mouse_pos)
+                
+            if snap_type == 'VERTEX':
+                color = (0.2, 0.8, 0.2, 1.0)
+                shape = 'CIRCLE'
+                label = "Endpoint"
+            elif snap_type == 'MIDPOINT':
+                color = (0.0, 0.8, 0.8, 1.0)
+                shape = 'CIRCLE'
+                label = "Midpoint"
+            elif snap_type == 'EDGE':
+                color = (0.8, 0.2, 0.2, 1.0)
+                shape = 'SQUARE'
+                label = "On Edge"
+            elif snap_type == 'FACE':
+                color = (0.2, 0.2, 0.8, 1.0)
+                shape = 'SQUARE'
+                label = "On Face"
+            elif snap_type == 'GRID':
+                color = (0.5, 0.5, 0.5, 1.0)
+                shape = 'CIRCLE'
+                label = "Grid"
+            else:
+                shape = None
+                label = None
+                
+            if shape and pos_2d:
+                gpu.state.blend_set('ALPHA')
+                if shape == 'CIRCLE':
+                    segments = 16
+                    radius = 6.0
+                    coords = []
+                    for i in range(segments):
+                        angle = i * 2.0 * math.pi / segments
+                        coords.append((pos_2d[0] + math.cos(angle) * radius, pos_2d[1] + math.sin(angle) * radius))
+                    batch_fill = batch_for_shader(shader, 'TRI_FAN', {"pos": coords})
+                    shader.bind()
+                    shader.uniform_float("color", color)
+                    batch_fill.draw(shader)
+                    batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": coords})
+                    shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+                    batch_outline.draw(shader)
+                elif shape == 'SQUARE':
+                    radius = 5.0
+                    coords = [
+                        (pos_2d[0] - radius, pos_2d[1] - radius),
+                        (pos_2d[0] + radius, pos_2d[1] - radius),
+                        (pos_2d[0] + radius, pos_2d[1] + radius),
+                        (pos_2d[0] - radius, pos_2d[1] + radius)
+                    ]
+                    batch_fill = batch_for_shader(shader, 'TRI_FAN', {"pos": coords})
+                    shader.bind()
+                    shader.uniform_float("color", color)
+                    batch_fill.draw(shader)
+                    batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": coords})
+                    shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+                    batch_outline.draw(shader)
+                gpu.state.blend_set('NONE')
+
+                font_id = 0
+                try: blf.size(font_id, 14, 72)
+                except TypeError: blf.size(font_id, 14)
+                dims = blf.dimensions(font_id, label)
+                width = dims[0] + 8
+                height = dims[1] + 8
+                x = float(pos_2d[0] + 15)
+                y = float(pos_2d[1] - 10)
+                box_coords = [
+                    (x, y), (x + width, y), (x + width, y + height), (x, y + height)
+                ]
+                gpu.state.blend_set('ALPHA')
+                batch_bg = batch_for_shader(shader, 'TRI_FAN', {"pos": box_coords})
+                shader.bind()
+                shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
+                batch_bg.draw(shader)
+                batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": box_coords})
+                shader.uniform_float("color", (0.5, 0.5, 0.5, 1.0))
+                batch_outline.draw(shader)
+                gpu.state.blend_set('NONE')
+                blf.position(font_id, x + 4, y + 4, 0.0)
+                blf.color(font_id, 0.0, 0.0, 0.0, 1.0)
+                blf.draw(font_id, label)
+        except Exception as e:
+            font_id = 0
+            blf.position(font_id, 50.0, 50.0, 0.0)
+            blf.color(font_id, 1.0, 0.0, 0.0, 1.0)
+            try: blf.size(font_id, 20, 72)
+            except TypeError: blf.size(font_id, 20)
+            blf.draw(font_id, str(e))
 
 def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     use_snap = context.scene.tool_settings.use_snap
@@ -102,7 +203,7 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
         use_snap = not use_snap
         
     if not use_snap:
-        return location
+        return location, None
         
     region = context.region
     rv3d = context.region_data
@@ -111,19 +212,21 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     snap_radius_px = 30.0
     
     best_snap = None
+    best_snap_type = None
     best_dist = snap_radius_px
 
     def check_vertex(v_world):
-        nonlocal best_snap, best_dist
+        nonlocal best_snap, best_dist, best_snap_type
         v_2d = location_3d_to_region_2d(region, rv3d, v_world)
         if v_2d:
             dist = (v_2d - mouse_2d).length
             if dist < best_dist:
                 best_dist = dist
                 best_snap = v_world
+                best_snap_type = 'VERTEX'
 
     def check_edge(v1_world, v2_world):
-        nonlocal best_snap, best_dist
+        nonlocal best_snap, best_dist, best_snap_type
         if 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
             midpoint = (v1_world + v2_world) * 0.5
             p_2d = location_3d_to_region_2d(region, rv3d, midpoint)
@@ -132,6 +235,7 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
                 if dist < best_dist:
                     best_dist = dist
                     best_snap = midpoint
+                    best_snap_type = 'MIDPOINT'
 
         if 'EDGE' in snap_elements:
             ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_2d)
@@ -150,6 +254,7 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
                     if dist < best_dist:
                         best_dist = dist
                         best_snap = pt
+                        best_snap_type = 'EDGE'
 
     # 1. Check all low-poly visible objects (catches all isolated lines and previous drawings)
     for o in context.view_layer.objects:
@@ -196,12 +301,12 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
                     check_edge(v1, v2)
 
     if best_snap is not None:
-        return best_snap
+        return best_snap, best_snap_type
 
     if hit and 'FACE' in snap_elements:
-        return location
+        return location, 'FACE'
 
-    return location
+    return location, None
 
 def get_mouse_3d_pos(context, event, last_point=None):
     global manual_axis_lock, shift_locked_axis, current_axis_color
@@ -226,19 +331,20 @@ def get_mouse_3d_pos(context, event, last_point=None):
 
     if last_point is None:
         current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
-        final_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        final_pos, s_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
         
         use_snap = context.scene.tool_settings.use_snap
         if event.ctrl: use_snap = not use_snap
         if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and final_pos == raw_pos:
             grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
             
+            s_type = 'GRID'
             final_pos = Vector((
                 round(final_pos.x / grid_scale) * grid_scale,
                 round(final_pos.y / grid_scale) * grid_scale,
                 round(final_pos.z / grid_scale) * grid_scale
             ))
-        return final_pos
+        return final_pos, s_type
 
     # 2. Determine Active Constraint Axis
     active_axis = None
@@ -332,13 +438,14 @@ def get_mouse_3d_pos(context, event, last_point=None):
             constrained_pos = last_point + active_axis * (raw_pos - last_point).length
             
         # SKETCHUP INFERENCE: If we hover over a vertex while locked, project it onto our axis
-        snap_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        snap_pos, s_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
         if snap_pos != raw_pos:
             vec_to_snap = snap_pos - last_point
             proj_dist = vec_to_snap.dot(active_axis)
             final_pos = last_point + active_axis * proj_dist
         else:
             final_pos = constrained_pos
+            s_type = None
             
         # Grid Snapping along axis
         use_snap = context.scene.tool_settings.use_snap
@@ -357,26 +464,28 @@ def get_mouse_3d_pos(context, event, last_point=None):
                 target = round(final_pos.z / grid_scale) * grid_scale
                 proj_dist = (target - last_point.z) / active_axis.z if active_axis.z != 0 else 0
             final_pos = last_point + active_axis * proj_dist
+            s_type = 'GRID'
 
-        return final_pos
+        return final_pos, s_type
 
     current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
 
     # 4. Unconstrained Snapping
-    final_pos = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+    final_pos, s_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
     
     use_snap = context.scene.tool_settings.use_snap
     if event.ctrl: use_snap = not use_snap
     if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements) and final_pos == raw_pos:
         grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
         
+        s_type = 'GRID'
         final_pos = Vector((
             round(final_pos.x / grid_scale) * grid_scale,
             round(final_pos.y / grid_scale) * grid_scale,
             round(final_pos.z / grid_scale) * grid_scale
         ))
         
-    return final_pos
+    return final_pos, s_type
 
 # --- Operators ---
 
@@ -423,15 +532,17 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.obj.data.update()
 
     def end_tool(self, context):
-        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length
+        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type
         draw_points = []
         mouse_pos = None
         manual_axis_lock = None
         shift_locked_axis = None
         typed_length = ""
+        snap_type = None
         self.chain_verts = []
         context.workspace.status_text_set(None)
         self.remove_draw_handler()
+        context.window.cursor_modal_restore()
         
         if hasattr(self, 'bm'):
             if len(self.bm.verts) == 0:
@@ -501,11 +612,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         self.update_mesh()
 
     def update_mouse_pos(self, context, event):
-        global mouse_pos, draw_points
+        global mouse_pos, draw_points, snap_type
         last_pt = draw_points[-1] if len(draw_points) > 0 else None
-        loc = get_mouse_3d_pos(context, event, last_pt)
-        if loc:
-            mouse_pos = loc
+        res = get_mouse_3d_pos(context, event, last_pt)
+        if res:
+            mouse_pos, snap_type = res
 
     def modal(self, context, event):
         global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length
@@ -621,13 +732,15 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length
+            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type
             draw_points = []
             mouse_pos = None
             manual_axis_lock = None
             shift_locked_axis = None
             typed_length = ""
+            snap_type = None
             self.chain_verts = []
+            context.window.cursor_modal_set('PAINT_BRUSH')
             self.undo_history = []
             
             self.update_mouse_pos(context, event)
