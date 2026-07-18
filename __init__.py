@@ -666,10 +666,12 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.update_mouse_pos(context, event)
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            if event.mouse_region_x < 0 or event.mouse_region_x > context.region.width or \
-               event.mouse_region_y < 0 or event.mouse_region_y > context.region.height:
-                return {'PASS_THROUGH'}
-                
+            for region in context.area.regions:
+                if region.type != 'WINDOW':
+                    if region.x <= event.mouse_x <= region.x + region.width and \
+                       region.y <= event.mouse_y <= region.y + region.height:
+                        return {'PASS_THROUGH'}
+                        
             if mouse_pos:
                 self.add_point(mouse_pos)
                 typed_length = ""
