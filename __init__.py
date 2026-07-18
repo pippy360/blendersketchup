@@ -1,7 +1,7 @@
 bl_info = {
     "name": "SketchUp Tools",
     "author": "Antigravity",
-    "version": (0, 2),
+    "version": (0, 3),
     "blender": (3, 0, 0),
     "location": "View3D > Toolbar",
     "description": "SketchUp-like tools for building primitives and outlines",
@@ -27,15 +27,23 @@ draw_handler_3d = None
 draw_handler_2d = None
 draw_points = []
 mouse_pos = None
-axis_lock = None  # None, 'X', 'Y', 'Z'
+
+manual_axis_lock = None  # None, 'X', 'Y', 'Z'
+shift_locked_axis = None # Vector
+current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black default
 typed_length = ""
 
-# Precompute 45-degree unit vectors in 3D for Shift-snapping
+primary_axes = [
+    Vector((1,0,0)), Vector((-1,0,0)),
+    Vector((0,1,0)), Vector((0,-1,0)),
+    Vector((0,0,1)), Vector((0,0,-1))
+]
+
 snap_dirs = [v.normalized() for v in [
-    Vector((1,0,0)), Vector((-1,0,0)), Vector((0,1,0)), Vector((0,-1,0)), Vector((0,0,1)), Vector((0,0,-1)), # Axes
-    Vector((1,1,0)), Vector((1,-1,0)), Vector((-1,1,0)), Vector((-1,-1,0)), # XY Plane 45s
-    Vector((1,0,1)), Vector((1,0,-1)), Vector((-1,0,1)), Vector((-1,0,-1)), # XZ Plane 45s
-    Vector((0,1,1)), Vector((0,1,-1)), Vector((0,-1,1)), Vector((0,-1,-1))  # YZ Plane 45s
+    Vector((1,0,0)), Vector((-1,0,0)), Vector((0,1,0)), Vector((0,-1,0)), Vector((0,0,1)), Vector((0,0,-1)),
+    Vector((1,1,0)), Vector((1,-1,0)), Vector((-1,1,0)), Vector((-1,-1,0)),
+    Vector((1,0,1)), Vector((1,0,-1)), Vector((-1,0,1)), Vector((-1,0,-1)),
+    Vector((0,1,1)), Vector((0,1,-1)), Vector((0,-1,1)), Vector((0,-1,-1))
 ]]
 
 def draw_callback_3d(self, context):
@@ -45,19 +53,15 @@ def draw_callback_3d(self, context):
     coords = [draw_points[-1], mouse_pos]
     batch = batch_for_shader(shader, 'LINES', {"pos": coords})
     
-    # Change guide line color based on axis lock (like SketchUp)
-    if axis_lock == 'X':
-        color = (1.0, 0.2, 0.2, 1.0) # Red
-    elif axis_lock == 'Y':
-        color = (0.2, 1.0, 0.2, 1.0) # Green
-    elif axis_lock == 'Z':
-        color = (0.2, 0.5, 1.0, 1.0) # Blue
-    else:
-        color = (1.0, 0.2, 0.8, 1.0) # Magenta default
-        
     shader.bind()
-    shader.uniform_float("color", color)
-    gpu.state.line_width_set(2.0)
+    shader.uniform_float("color", current_axis_color)
+    
+    # SketchUp draws thicker lines for locked axes
+    if manual_axis_lock or shift_locked_axis:
+        gpu.state.line_width_set(3.0)
+    else:
+        gpu.state.line_width_set(2.0)
+        
     batch.draw(shader)
     gpu.state.line_width_set(1.0)
 
@@ -73,8 +77,6 @@ def draw_callback_2d(self, context):
     if pos_2d:
         font_id = 0
         blf.position(font_id, float(pos_2d[0] + 15), float(pos_2d[1] + 15), 0.0)
-        
-        # Increased text size to 20
         try:
             blf.size(font_id, 20, 72)
         except TypeError:
@@ -84,9 +86,8 @@ def draw_callback_2d(self, context):
         blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 1.0)
         blf.shadow_offset(font_id, 1, -1)
         
-        # If typing, show the typed length, otherwise show actual length
         if typed_length:
-            blf.color(font_id, 1.0, 0.8, 0.2, 1.0) # Yellowish while typing
+            blf.color(font_id, 1.0, 0.8, 0.2, 1.0)
             text = f"Length: {typed_length}_"
         else:
             blf.color(font_id, 1.0, 1.0, 1.0, 1.0) 
@@ -95,153 +96,195 @@ def draw_callback_2d(self, context):
         blf.draw(font_id, text)
         blf.disable(font_id, blf.SHADOW)
 
+def apply_native_snapping(context, event, hit, location, index, obj, matrix):
+    if not hit:
+        return location
+        
+    use_snap = context.scene.tool_settings.use_snap
+    if event.ctrl:
+        use_snap = not use_snap
+        
+    if use_snap and obj.type == 'MESH':
+        region = context.region
+        rv3d = context.region_data
+        mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+        
+        snap_elements = context.scene.tool_settings.snap_elements
+        mesh = obj.data
+        poly = mesh.polygons[index]
+        snap_radius_px = 30.0
+        
+        if 'VERTEX' in snap_elements:
+            closest_dist = float('inf')
+            closest_v = location
+            for v_idx in poly.vertices:
+                v_world = matrix @ mesh.vertices[v_idx].co
+                dist = (v_world - location).length
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_v = v_world
+            
+            v_2d = location_3d_to_region_2d(region, rv3d, closest_v)
+            if v_2d and (v_2d - mouse_2d).length < snap_radius_px:
+                return closest_v
+
+        if 'EDGE' in snap_elements:
+            closest_dist = float('inf')
+            closest_pt = location
+            for loop_idx in poly.loop_indices:
+                v1_idx = mesh.loops[loop_idx].vertex_index
+                next_loop_idx = poly.loop_start + (loop_idx - poly.loop_start + 1) % poly.loop_total
+                v2_idx = mesh.loops[next_loop_idx].vertex_index
+                
+                v1_world = matrix @ mesh.vertices[v1_idx].co
+                v2_world = matrix @ mesh.vertices[v2_idx].co
+                
+                pt = geometry.intersect_point_line(location, v1_world, v2_world)[0]
+                vec1 = pt - v1_world
+                vec2 = v2_world - v1_world
+                if vec1.dot(vec2) < 0: pt = v1_world
+                elif vec1.length > vec2.length: pt = v2_world
+                    
+                dist = (pt - location).length
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_pt = pt
+                    
+            p_2d = location_3d_to_region_2d(region, rv3d, closest_pt)
+            if p_2d and (p_2d - mouse_2d).length < snap_radius_px:
+                return closest_pt
+                
+    return location
+
 def get_mouse_3d_pos(context, event, last_point=None):
-    """Raycast from mouse to find 3D location, factoring in axis locks and snapping"""
+    global manual_axis_lock, shift_locked_axis, current_axis_color
+
     region = context.region
     rv3d = context.region_data
     coord = (event.mouse_region_x, event.mouse_region_y)
-    mouse_2d = Vector(coord)
-
     view_vector = region_2d_to_vector_3d(region, rv3d, coord)
     ray_origin = region_2d_to_origin_3d(region, rv3d, coord)
-    
     depsgraph = context.view_layer.depsgraph
 
-    # 1. Handle Axis Lock if we have a previous point
-    if last_point is not None and axis_lock is not None:
-        if axis_lock == 'X':
-            axis_vec = Vector((1, 0, 0))
-        elif axis_lock == 'Y':
-            axis_vec = Vector((0, 1, 0))
-        elif axis_lock == 'Z':
-            axis_vec = Vector((0, 0, 1))
+    # 1. Raw Hit Position
+    hit, location, normal, index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
+    
+    raw_pos = location
+    if not hit:
+        plane_normal = Vector((0, 0, 1))
+        plane_point = Vector((0, 0, 0))
+        raw_pos = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, plane_point, plane_normal)
+        if raw_pos is None:
+            raw_pos = ray_origin + view_vector * 10.0
+
+    if last_point is None:
+        current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
+        return apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
+
+    # 2. Determine Active Constraint Axis
+    active_axis = None
+    
+    if manual_axis_lock == 'X':
+        active_axis = Vector((1, 0, 0))
+    elif manual_axis_lock == 'Y':
+        active_axis = Vector((0, 1, 0))
+    elif manual_axis_lock == 'Z':
+        active_axis = Vector((0, 0, 1))
+    elif event.shift:
+        if shift_locked_axis is None:
+            # Determine locked axis by 2D screen projection
+            last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
+            mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
             
-        # Create a plane that contains the axis line and faces the camera
-        plane_normal = axis_vec.cross(view_vector).cross(axis_vec)
+            if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
+                mouse_dir_2d = (mouse_2d - last_pt_2d).normalized()
+                cam_pos = rv3d.view_matrix.inverted().translation
+                dist_to_cam = (last_point - cam_pos).length
+                
+                best_axis = None
+                best_dot = -1
+                for axis in snap_dirs:
+                    ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
+                    if ax_pt_2d:
+                        ax_dir_2d = (ax_pt_2d - last_pt_2d)
+                        if ax_dir_2d.length > 0.001:
+                            ax_dir_2d.normalize()
+                            d = mouse_dir_2d.dot(ax_dir_2d)
+                            if d > best_dot:
+                                best_dot = d
+                                best_axis = axis
+                if best_axis is not None:
+                    shift_locked_axis = best_axis
+                    
+            if shift_locked_axis is None:
+                # Fallback to 3D projection if 2D failed
+                dir_vec = (raw_pos - last_point)
+                if dir_vec.length > 0.001:
+                    dir_vec.normalize()
+                    shift_locked_axis = max(snap_dirs, key=lambda v: dir_vec.dot(v))
+                    
+        active_axis = shift_locked_axis
+    else:
+        shift_locked_axis = None
+        # Auto-snapping using 2D screen projection of axes
+        last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
+        mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+        
+        if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
+            mouse_dir_2d = (mouse_2d - last_pt_2d).normalized()
+            cam_pos = rv3d.view_matrix.inverted().translation
+            dist_to_cam = (last_point - cam_pos).length
+            
+            best_axis = None
+            best_dot = -1
+            for axis in primary_axes:
+                ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
+                if ax_pt_2d:
+                    ax_dir_2d = (ax_pt_2d - last_pt_2d)
+                    if ax_dir_2d.length > 0.001:
+                        ax_dir_2d.normalize()
+                        d = mouse_dir_2d.dot(ax_dir_2d)
+                        if d > best_dot:
+                            best_dot = d
+                            best_axis = axis
+            
+            if best_dot > 0.985: # Roughly 10 degrees threshold in 2D space
+                active_axis = best_axis
+
+    # 3. Apply Constraint
+    if active_axis is not None:
+        abs_x = abs(active_axis.x)
+        abs_y = abs(active_axis.y)
+        abs_z = abs(active_axis.z)
+        if abs_x > 0.99: current_axis_color = (1.0, 0.2, 0.2, 1.0) # Red
+        elif abs_y > 0.99: current_axis_color = (0.2, 1.0, 0.2, 1.0) # Green
+        elif abs_z > 0.99: current_axis_color = (0.2, 0.5, 1.0, 1.0) # Blue
+        else: current_axis_color = (1.0, 0.2, 0.8, 1.0) # Magenta
+
+        plane_normal = active_axis.cross(view_vector).cross(active_axis)
         if plane_normal.length < 0.0001:
             plane_normal = view_vector
             
         hit_plane = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, last_point, plane_normal)
         if hit_plane:
-            # Project hit point onto the axis line
-            vec_to_hit = hit_plane - last_point
-            proj = vec_to_hit.dot(axis_vec)
+            proj = (hit_plane - last_point).dot(active_axis)
+            constrained_pos = last_point + active_axis * proj
+        else:
+            constrained_pos = last_point + active_axis * (raw_pos - last_point).length
             
-            # Determine locked 3D position
-            locked_pos = last_point + axis_vec * proj
+        # SKETCHUP INFERENCE: If we hover over a vertex while locked, project it onto our axis
+        snap_pos = apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
+        if snap_pos != raw_pos:
+            vec_to_snap = snap_pos - last_point
+            proj_dist = vec_to_snap.dot(active_axis)
+            return last_point + active_axis * proj_dist
             
-            # Snapping while axis locked (Snap to intersections of the locked axis and geometry)
-            # This is complex, so for simplicity we just return the locked pos
-            return locked_pos
-            
-        return last_point
+        return constrained_pos
 
-    # 2. Raycast against scene geometry
-    hit, location, normal, index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
+    current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black
 
-    if not hit:
-        # 3. Intersect with the Z=0 ground plane if we didn't hit geometry
-        plane_normal = Vector((0, 0, 1))
-        plane_point = Vector((0, 0, 0))
-        location = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, plane_point, plane_normal)
-        if location is None:
-            location = ray_origin + view_vector * 10.0
-
-    # --- Shift-key Angle Snapping (45 degrees) ---
-    if last_point is not None and event.shift and axis_lock is None:
-        dir_vec = location - last_point
-        if dir_vec.length > 0.001:
-            dir_vec.normalize()
-            best_dot = -1
-            best_dir = None
-            
-            # Find the closest 45-degree vector
-            for snap_dir in snap_dirs:
-                d = dir_vec.dot(snap_dir)
-                if d > best_dot:
-                    best_dot = d
-                    best_dir = snap_dir
-                    
-            if best_dir:
-                # Project the mouse ray onto the chosen snapped line
-                plane_normal = best_dir.cross(view_vector).cross(best_dir)
-                if plane_normal.length < 0.0001:
-                    plane_normal = view_vector
-                    
-                hit_plane = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, last_point, plane_normal)
-                if hit_plane:
-                    vec_to_hit = hit_plane - last_point
-                    proj = vec_to_hit.dot(best_dir)
-                    return last_point + best_dir * proj
-                return last_point + best_dir * dir_vec.length
-
-    if hit:
-        # --- Native Snapping Logic ---
-        # Toggle snap if user is holding Ctrl, or if snapping is enabled
-        use_snap = context.scene.tool_settings.use_snap
-        if event.ctrl:
-            use_snap = not use_snap
-            
-        if use_snap and obj.type == 'MESH':
-            snap_elements = context.scene.tool_settings.snap_elements
-            mesh = obj.data
-            poly = mesh.polygons[index]
-            snap_radius_px = 30.0 # Pixels threshold to snap
-            
-            # A) Vertex Snapping
-            if 'VERTEX' in snap_elements:
-                closest_dist = float('inf')
-                closest_v = location
-                
-                for v_idx in poly.vertices:
-                    v_world = matrix @ mesh.vertices[v_idx].co
-                    dist = (v_world - location).length
-                    if dist < closest_dist:
-                        closest_dist = dist
-                        closest_v = v_world
-                
-                # Check if it's within pixel radius on screen
-                v_2d = location_3d_to_region_2d(region, rv3d, closest_v)
-                if v_2d and (v_2d - mouse_2d).length < snap_radius_px:
-                    return closest_v
-
-            # B) Edge Snapping
-            if 'EDGE' in snap_elements:
-                closest_dist = float('inf')
-                closest_pt = location
-                
-                for loop_idx in poly.loop_indices:
-                    v1_idx = mesh.loops[loop_idx].vertex_index
-                    # Get next vertex in loop
-                    next_loop_idx = poly.loop_start + (loop_idx - poly.loop_start + 1) % poly.loop_total
-                    v2_idx = mesh.loops[next_loop_idx].vertex_index
-                    
-                    v1_world = matrix @ mesh.vertices[v1_idx].co
-                    v2_world = matrix @ mesh.vertices[v2_idx].co
-                    
-                    # Find closest point on line segment
-                    pt = geometry.intersect_point_line(location, v1_world, v2_world)[0]
-                    
-                    # Clamp to segment bounds
-                    vec1 = pt - v1_world
-                    vec2 = v2_world - v1_world
-                    if vec1.dot(vec2) < 0:
-                        pt = v1_world
-                    elif vec1.length > vec2.length:
-                        pt = v2_world
-                        
-                    dist = (pt - location).length
-                    if dist < closest_dist:
-                        closest_dist = dist
-                        closest_pt = pt
-                        
-                p_2d = location_3d_to_region_2d(region, rv3d, closest_pt)
-                if p_2d and (p_2d - mouse_2d).length < snap_radius_px:
-                    return closest_pt
-                    
-        return location
-        
-    return location
+    # 4. Native Snapping (Unconstrained)
+    return apply_native_snapping(context, event, hit, raw_pos, index, obj, matrix)
 
 # --- Operators ---
 
@@ -288,10 +331,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.obj.data.update()
 
     def end_tool(self, context):
-        global draw_points, mouse_pos, axis_lock, typed_length
+        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length
         draw_points = []
         mouse_pos = None
-        axis_lock = None
+        manual_axis_lock = None
+        shift_locked_axis = None
         typed_length = ""
         self.chain_verts = []
         context.workspace.status_text_set(None)
@@ -303,8 +347,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.bm.free()
 
     def add_point(self, pos):
-        """Adds a point, draws edges, and closes faces if necessary"""
-        global draw_points, axis_lock
+        global draw_points, manual_axis_lock, shift_locked_axis
         
         step_geom = []
         v = self.bm.verts.new(pos)
@@ -336,7 +379,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                     except Exception:
                         pass
                         
-                    # Save history before clearing the chain
                     self.undo_history.append({
                         'type': 'CLOSE_FACE',
                         'geom': step_geom,
@@ -346,7 +388,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                     
                     self.chain_verts.clear()
                     draw_points.clear()
-                    axis_lock = None
+                    manual_axis_lock = None
+                    shift_locked_axis = None
                     self.update_mesh()
                     self.report({'INFO'}, "Face Closed")
                     return
@@ -361,7 +404,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             'prev_draw': list(draw_points[:-1])
         })
         
-        axis_lock = None # Reset lock after placing a point
+        manual_axis_lock = None
+        shift_locked_axis = None
         self.update_mesh()
 
     def update_mouse_pos(self, context, event):
@@ -372,17 +416,22 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             mouse_pos = loc
 
     def modal(self, context, event):
-        global mouse_pos, draw_points, axis_lock, typed_length
+        global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length
         context.area.tag_redraw()
 
-        if event.type == 'MOUSEMOVE':
+        if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT'}:
+            if event.value == 'RELEASE':
+                shift_locked_axis = None
+            self.update_mouse_pos(context, event)
+            return {'PASS_THROUGH'}
+
+        elif event.type == 'MOUSEMOVE':
             self.update_mouse_pos(context, event)
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             if mouse_pos:
                 self.add_point(mouse_pos)
                 typed_length = ""
-                # Update mouse pos immediately so preview line updates
                 self.update_mouse_pos(context, event)
             return {'RUNNING_MODAL'}
             
@@ -395,7 +444,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             })
             draw_points.clear()
             self.chain_verts.clear()
-            axis_lock = None
+            manual_axis_lock = None
+            shift_locked_axis = None
             typed_length = ""
             self.report({'INFO'}, "Chain Broken")
             return {'RUNNING_MODAL'}
@@ -406,11 +456,9 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             return {'CANCELLED'}
             
         elif event.type == 'Z' and event.value == 'PRESS' and (event.ctrl or event.oskey):
-            # Custom Undo Logic
             if len(self.undo_history) > 0:
                 last_action = self.undo_history.pop()
                 
-                # 1. Remove geometry (Faces -> Edges -> Verts)
                 geom = last_action['geom']
                 for g in geom:
                     if isinstance(g, bmesh.types.BMFace) and g.is_valid: self.bm.faces.remove(g)
@@ -419,11 +467,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 for g in geom:
                     if isinstance(g, bmesh.types.BMVert) and g.is_valid: self.bm.verts.remove(g)
                         
-                # 2. Restore state
                 self.chain_verts = last_action['prev_chain']
                 draw_points.clear()
                 draw_points.extend(last_action['prev_draw'])
-                axis_lock = None
+                manual_axis_lock = None
+                shift_locked_axis = None
                 typed_length = ""
                 
                 self.update_mesh()
@@ -433,21 +481,19 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             return {'RUNNING_MODAL'}
             
         elif event.value == 'PRESS':
-            # --- Axis Locking ---
             if event.type == 'X':
-                axis_lock = 'X' if axis_lock != 'X' else None
+                manual_axis_lock = 'X' if manual_axis_lock != 'X' else None
                 self.update_mouse_pos(context, event)
                 return {'RUNNING_MODAL'}
             elif event.type == 'Y':
-                axis_lock = 'Y' if axis_lock != 'Y' else None
+                manual_axis_lock = 'Y' if manual_axis_lock != 'Y' else None
                 self.update_mouse_pos(context, event)
                 return {'RUNNING_MODAL'}
             elif event.type == 'Z':
-                axis_lock = 'Z' if axis_lock != 'Z' else None
+                manual_axis_lock = 'Z' if manual_axis_lock != 'Z' else None
                 self.update_mouse_pos(context, event)
                 return {'RUNNING_MODAL'}
                 
-            # --- Typing Lengths ---
             elif event.type == 'BACK_SPACE':
                 typed_length = typed_length[:-1]
                 return {'RUNNING_MODAL'}
@@ -459,10 +505,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         if direction.length > 0.0001:
                             direction.normalize()
                         else:
-                            if axis_lock == 'X': direction = Vector((1,0,0))
-                            elif axis_lock == 'Y': direction = Vector((0,1,0))
-                            elif axis_lock == 'Z': direction = Vector((0,0,1))
-                            else: direction = Vector((1,0,0))
+                            direction = Vector((1,0,0))
                             
                         exact_pos = draw_points[-1] + direction * val
                         self.add_point(exact_pos)
@@ -474,7 +517,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                     typed_length = ""
                     return {'RUNNING_MODAL'}
                 else:
-                    # If nothing typed, enter confirms the tool
                     self.end_tool(context)
                     self.report({'INFO'}, "Finished SketchUp Draw Tool")
                     return {'FINISHED'}
@@ -487,10 +529,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, axis_lock, typed_length
+            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length
             draw_points = []
             mouse_pos = None
-            axis_lock = None
+            manual_axis_lock = None
+            shift_locked_axis = None
             typed_length = ""
             self.chain_verts = []
             self.undo_history = []
