@@ -2,7 +2,7 @@ import bpy
 import unittest
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from mathutils import Vector
 
 class TestSketchUpAddon(unittest.TestCase):
@@ -96,6 +96,7 @@ class TestSnappingBehavior(unittest.TestCase):
         """Test snapping to a nearby vertex"""
         mock_obj = MagicMock()
         mock_obj.type = 'MESH'
+        mock_obj.mode = 'OBJECT'
         mock_obj.visible_get.return_value = True
         
         mock_obj.matrix_world = MagicMock()
@@ -122,6 +123,192 @@ class TestSnappingBehavior(unittest.TestCase):
         self.assertEqual(snap_type, 'VERTEX')
         self.assertEqual(loc, Vector((100, 100, 5)))
 
+    def test_snapping_vertex_edit_mode(self):
+        """Test snapping to a nearby vertex in EDIT mode using bmesh"""
+        from unittest.mock import patch
+        
+        mock_obj = MagicMock()
+        mock_obj.type = 'MESH'
+        mock_obj.mode = 'EDIT'
+        mock_obj.visible_get.return_value = True
+        
+        mock_obj.matrix_world = MagicMock()
+        mock_obj.matrix_world.__matmul__ = lambda self, other: other
+        
+        mock_mesh = MagicMock()
+        v1 = MagicMock()
+        v1.co = Vector((100, 100, 5))
+        
+        class MockVertices(list):
+            pass
+        
+        mock_mesh.vertices = MockVertices([v1])
+        
+        mock_obj.data = mock_mesh
+        self.context.view_layer.objects = [mock_obj]
+        
+        # We need to mock bmesh.from_edit_mesh since the real one expects a real mesh
+        with patch('bmesh.from_edit_mesh') as mock_from_edit_mesh:
+            mock_bm = MagicMock()
+            mock_bm.verts = [v1]
+            mock_bm.edges = []
+            mock_from_edit_mesh.return_value = mock_bm
+            
+            loc, snap_type = self.addon.apply_geometry_snapping(
+                self.context, self.event, False, Vector((0,0,0)), 0, None, None
+            )
+            
+            self.assertEqual(snap_type, 'VERTEX')
+            self.assertEqual(loc, Vector((100, 100, 5)))
+
+
+class TestUndoRedoBehavior(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.addon_name = "blendersketchup"
+        cls.addon = sys.modules.get(cls.addon_name)
+
+    def setUp(self):
+        self.context = MagicMock()
+        mock_obj = MagicMock()
+        mock_obj.type = 'MESH'
+        mock_obj.mode = 'EDIT'
+        mock_obj.matrix_world = MagicMock()
+        mock_obj.matrix_world.__matmul__ = lambda self, other: other
+        mock_obj.matrix_world.inverted.return_value = mock_obj.matrix_world
+        self.context.edit_object = mock_obj
+        
+        class DummyTool:
+            add_point = self.addon.SKETCHUP_OT_draw_tool.add_point
+            break_chain = self.addon.SKETCHUP_OT_draw_tool.break_chain
+            modal = self.addon.SKETCHUP_OT_draw_tool.modal
+            end_tool = MagicMock()
+            update_mouse_pos = MagicMock()
+            report = MagicMock()
+            update_mesh = MagicMock()
+        
+        self.tool = DummyTool()
+        
+        active_tool_mock = MagicMock()
+        active_tool_mock.idname = "sketchup.draw_tool_v2"
+        self.context.workspace.tools.from_space_view3d_mode.return_value = active_tool_mock
+        
+        class MockBmesh:
+            def __init__(self):
+                self.verts = self.MockElementList(self.MockVert)
+                self.edges = self.MockElementList(self.MockEdge)
+                self.faces = self.MockElementList(self.MockFace)
+                
+            class MockElementList(list):
+                def __init__(self, elem_class):
+                    super().__init__()
+                    self.elem_class = elem_class
+                def new(self, *args):
+                    elem = self.elem_class(*args)
+                    self.append(elem)
+                    return elem
+                def remove(self, elem):
+                    elem.is_valid = False
+                    if elem in self:
+                        super().remove(elem)
+
+            class MockVert:
+                def __init__(self, co):
+                    self.co = co
+                    self.is_valid = True
+            
+            class MockEdge:
+                def __init__(self, verts):
+                    self.verts = verts
+                    self.is_valid = True
+            
+            class MockFace:
+                def __init__(self, verts):
+                    self.verts = verts
+                    self.is_valid = True
+                    
+        self.mock_bm = MockBmesh()
+        self.tool.obj = mock_obj
+        self.tool.bm = self.mock_bm
+        self.tool.undo_history = []
+        self.tool.redo_history = []
+        self.tool.chain_verts = []
+        
+        self.addon.draw_points = []
+        self.addon.manual_axis_lock = None
+        self.addon.shift_locked_axis = None
+        
+        self.context.area = MagicMock()
+        self.context.area.x = 0
+        self.context.area.y = 0
+        self.context.area.width = 1000
+        self.context.area.height = 1000
+        self.context.area.regions = []
+        
+
+
+    @patch('bmesh.types')
+    def test_undo_redo_add_point(self, mock_bmesh_types):
+        mock_bmesh_types.BMVert = type(self.mock_bm.verts[0]) if self.mock_bm.verts else type(self.mock_bm.MockVert(None))
+        mock_bmesh_types.BMEdge = type(self.mock_bm.MockEdge(None))
+        mock_bmesh_types.BMFace = type(self.mock_bm.MockFace(None))
+        
+        self.tool.add_point(Vector((1, 0, 0)))
+        self.assertEqual(len(self.mock_bm.verts), 1)
+        self.assertEqual(len(self.tool.undo_history), 1)
+        self.assertEqual(len(self.tool.redo_history), 0)
+        
+        self.tool.add_point(Vector((2, 0, 0)))
+        self.assertEqual(len(self.mock_bm.verts), 2)
+        self.assertEqual(len(self.mock_bm.edges), 1)
+        self.assertEqual(len(self.tool.undo_history), 2)
+        
+        event = MagicMock()
+        event.type = 'Z'
+        event.value = 'PRESS'
+        event.ctrl = True
+        event.shift = False
+        event.mouse_x = 100
+        event.mouse_y = 100
+        
+        self.tool.modal(self.context, event)
+        self.assertEqual(len(self.mock_bm.verts), 1)
+        self.assertEqual(len(self.mock_bm.edges), 0)
+        self.assertEqual(len(self.tool.undo_history), 1)
+        self.assertEqual(len(self.tool.redo_history), 1)
+        
+        event.shift = True
+        self.tool.modal(self.context, event)
+        self.assertEqual(len(self.mock_bm.verts), 2)
+        self.assertEqual(len(self.mock_bm.edges), 1)
+        self.assertEqual(len(self.tool.undo_history), 2)
+        self.assertEqual(len(self.tool.redo_history), 0)
+
+    @patch('bmesh.types')
+    def test_undo_redo_break_chain(self, mock_bmesh_types):
+        mock_bmesh_types.BMVert = type(self.mock_bm.MockVert(None))
+        mock_bmesh_types.BMEdge = type(self.mock_bm.MockEdge(None))
+        mock_bmesh_types.BMFace = type(self.mock_bm.MockFace(None))
+        
+        self.tool.add_point(Vector((1, 0, 0)))
+        
+        self.tool.break_chain()
+        self.assertEqual(len(self.tool.undo_history), 2)
+        self.assertEqual(len(self.addon.draw_points), 0)
+        
+        event = MagicMock()
+        event.type = 'Z'
+        event.value = 'PRESS'
+        event.ctrl = True
+        event.shift = False
+        event.mouse_x = 100
+        event.mouse_y = 100
+        self.tool.modal(self.context, event)
+        self.assertEqual(len(self.addon.draw_points), 1)
+        
+        event.shift = True
+        self.tool.modal(self.context, event)
+        self.assertEqual(len(self.addon.draw_points), 0)
 
 if __name__ == "__main__":
     unittest.main(argv=['first-arg-is-ignored'], verbosity=2)

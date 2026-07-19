@@ -117,9 +117,9 @@ def draw_callback_2d(self, context):
             font_id = 0
             blf.position(font_id, float(pos_2d[0] + 15), float(pos_2d[1] + 15), 0.0)
             try:
-                blf.size(font_id, 20, 72)
+                blf.size(font_id, 40, 72)
             except TypeError:
-                blf.size(font_id, 20)
+                blf.size(font_id, 40)
             
             blf.enable(font_id, blf.SHADOW)
             blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 1.0)
@@ -304,14 +304,26 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
             mesh = o.data
             if len(mesh.vertices) < 10000:
                 mat = o.matrix_world
-                if 'VERTEX' in snap_elements:
-                    for v in mesh.vertices:
-                        check_vertex(mat @ v.co)
-                if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
-                    for edge in mesh.edges:
-                        v1 = mat @ mesh.vertices[edge.vertices[0]].co
-                        v2 = mat @ mesh.vertices[edge.vertices[1]].co
-                        check_edge(v1, v2)
+                if o.mode == 'EDIT':
+                    import bmesh
+                    bm = bmesh.from_edit_mesh(mesh)
+                    if 'VERTEX' in snap_elements:
+                        for v in bm.verts:
+                            check_vertex(mat @ v.co)
+                    if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
+                        for edge in bm.edges:
+                            v1 = mat @ edge.verts[0].co
+                            v2 = mat @ edge.verts[1].co
+                            check_edge(v1, v2)
+                else:
+                    if 'VERTEX' in snap_elements:
+                        for v in mesh.vertices:
+                            check_vertex(mat @ v.co)
+                    if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements or 'EDGE_CENTER' in snap_elements:
+                        for edge in mesh.edges:
+                            v1 = mat @ mesh.vertices[edge.vertices[0]].co
+                            v2 = mat @ mesh.vertices[edge.vertices[1]].co
+                            check_edge(v1, v2)
 
     # 2. Check the raycast hit polygon (crucial for high-poly meshes skipped above)
     if hit and obj and obj.type == 'MESH' and len(obj.data.vertices) >= 10000:
@@ -581,21 +593,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             bpy.types.SpaceView3D.draw_handler_remove(draw_handler_2d, 'WINDOW')
             draw_handler_2d = None
 
-    def create_mesh_object(self, context):
-        mesh = bpy.data.meshes.new("SketchUp_Mesh")
-        self.obj = bpy.data.objects.new("SketchUp_Object", mesh)
-        context.collection.objects.link(self.obj)
-        
-        bpy.ops.object.select_all(action='DESELECT')
-        self.obj.select_set(True)
-        context.view_layer.objects.active = self.obj
-        
-        self.bm = bmesh.new()
+    def setup_bmesh(self, context):
+        self.obj = context.edit_object
+        if self.obj and self.obj.type == 'MESH':
+            self.bm = bmesh.from_edit_mesh(self.obj.data)
 
     def update_mesh(self):
-        if hasattr(self, 'bm') and hasattr(self, 'obj'):
-            self.bm.to_mesh(self.obj.data)
-            self.obj.data.update()
+        if hasattr(self, 'bm') and hasattr(self, 'obj') and self.obj:
+            bmesh.update_edit_mesh(self.obj.data)
 
     def end_tool(self, context):
         global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running
@@ -612,17 +617,77 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         context.window.cursor_modal_restore()
         
         if hasattr(self, 'bm'):
-            if len(self.bm.verts) == 0:
-                bpy.data.objects.remove(self.obj)
-            self.bm.free()
             delattr(self, 'bm')
+        if hasattr(self, 'obj'):
             delattr(self, 'obj')
 
-    def add_point(self, pos):
+    def break_chain(self, is_redo=False):
+        global draw_points, manual_axis_lock, shift_locked_axis, typed_length
+        if not is_redo and hasattr(self, 'redo_history'):
+            self.redo_history.clear()
+            
+        self.undo_history.append({
+            'type': 'BREAK_CHAIN',
+            'action_type': 'BREAK_CHAIN',
+            'geom': [],
+            'prev_chain': list(self.chain_verts),
+            'prev_draw': list(draw_points)
+        })
+        draw_points.clear()
+        self.chain_verts.clear()
+        manual_axis_lock = None
+        shift_locked_axis = None
+        typed_length = ""
+
+    def add_point(self, pos, is_redo=False):
         global draw_points, manual_axis_lock, shift_locked_axis
         
+        if not hasattr(self, 'bm') or not self.obj:
+            return
+
+        if not is_redo and hasattr(self, 'redo_history'):
+            self.redo_history.clear()
+
         step_geom = []
-        v = self.bm.verts.new(pos)
+        
+        if len(self.chain_verts) >= 2:
+            world_first_co = self.obj.matrix_world @ self.chain_verts[0].co
+            dist = (pos - world_first_co).length
+            if dist < 0.1:
+                v_prev = self.chain_verts[-1]
+                v_first = self.chain_verts[0]
+                
+                try:
+                    e = self.bm.edges.new((v_prev, v_first))
+                    step_geom.append(e)
+                except ValueError:
+                    pass
+                    
+                try:
+                    f = self.bm.faces.new(self.chain_verts)
+                    step_geom.append(f)
+                except Exception:
+                    pass
+                    
+                self.undo_history.append({
+                    'type': 'CLOSE_FACE',
+                    'action_type': 'ADD_POINT',
+                    'pos': pos.copy(),
+                    'geom': step_geom,
+                    'prev_chain': list(self.chain_verts),
+                    'prev_draw': list(draw_points)
+                })
+                
+                self.chain_verts.clear()
+                draw_points.clear()
+                manual_axis_lock = None
+                shift_locked_axis = None
+                self.update_mesh()
+                self.report({'INFO'}, "Face Closed")
+                return
+
+        local_pos = self.obj.matrix_world.inverted() @ pos
+        v = self.bm.verts.new(local_pos)
         step_geom.append(v)
         
         if len(self.chain_verts) > 0:
@@ -633,44 +698,13 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             except ValueError:
                 pass
                 
-            if len(self.chain_verts) >= 2:
-                dist = (pos - self.chain_verts[0].co).length
-                if dist < 0.1:
-                    self.bm.verts.remove(v)
-                    step_geom.remove(v)
-                    
-                    v_first = self.chain_verts[0]
-                    try:
-                        e = self.bm.edges.new((v_prev, v_first))
-                        step_geom.append(e)
-                    except ValueError:
-                        pass
-                    try:
-                        f = self.bm.faces.new(self.chain_verts)
-                        step_geom.append(f)
-                    except Exception:
-                        pass
-                        
-                    self.undo_history.append({
-                        'type': 'CLOSE_FACE',
-                        'geom': step_geom,
-                        'prev_chain': list(self.chain_verts),
-                        'prev_draw': list(draw_points)
-                    })
-                    
-                    self.chain_verts.clear()
-                    draw_points.clear()
-                    manual_axis_lock = None
-                    shift_locked_axis = None
-                    self.update_mesh()
-                    self.report({'INFO'}, "Face Closed")
-                    return
-                    
         self.chain_verts.append(v)
         draw_points.append(pos.copy())
         
         self.undo_history.append({
             'type': 'ADD_POINT',
+            'action_type': 'ADD_POINT',
+            'pos': pos.copy(),
             'geom': step_geom,
             'prev_chain': list(self.chain_verts[:-1]),
             'prev_draw': list(draw_points[:-1])
@@ -729,24 +763,15 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 
             if mouse_pos:
                 if not hasattr(self, 'bm'):
-                    self.create_mesh_object(context)
-                self.add_point(mouse_pos)
-                typed_length = ""
+                    self.setup_bmesh(context)
+                if hasattr(self, 'bm'):
+                    self.add_point(mouse_pos)
+                    typed_length = ""
                 self.update_mouse_pos(context, event)
             return {'RUNNING_MODAL'}
             
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            self.undo_history.append({
-                'type': 'BREAK_CHAIN',
-                'geom': [],
-                'prev_chain': list(self.chain_verts),
-                'prev_draw': list(draw_points)
-            })
-            draw_points.clear()
-            self.chain_verts.clear()
-            manual_axis_lock = None
-            shift_locked_axis = None
-            typed_length = ""
+            self.break_chain()
             self.report({'INFO'}, "Chain Broken")
             return {'RUNNING_MODAL'}
 
@@ -757,7 +782,16 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             
         elif event.type == 'Z' and event.value == 'PRESS' and (event.ctrl or event.oskey):
             if event.shift:
-                self.report({'WARNING'}, "Redo not supported while drawing")
+                if hasattr(self, 'redo_history') and len(self.redo_history) > 0:
+                    action = self.redo_history.pop()
+                    if action['type'] == 'ADD_POINT':
+                        self.add_point(action['pos'], is_redo=True)
+                        self.report({'INFO'}, "Redid Add Point")
+                    elif action['type'] == 'BREAK_CHAIN':
+                        self.break_chain(is_redo=True)
+                        self.report({'INFO'}, "Redid Break Chain")
+                else:
+                    self.report({'WARNING'}, "Nothing to redo")
                 return {'RUNNING_MODAL'}
                 
             if len(self.undo_history) > 0:
@@ -777,6 +811,13 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 manual_axis_lock = None
                 shift_locked_axis = None
                 typed_length = ""
+                
+                if not hasattr(self, 'redo_history'):
+                    self.redo_history = []
+                self.redo_history.append({
+                    'type': last_action['action_type'],
+                    'pos': last_action.get('pos')
+                })
                 
                 self.update_mesh()
                 self.update_mouse_pos(context, event)
@@ -847,13 +888,15 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.chain_verts = []
             context.window.cursor_modal_set('PAINT_BRUSH')
             self.undo_history = []
+            self.redo_history = []
             
             self.update_mouse_pos(context, event)
             
             if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and mouse_pos:
                 if not hasattr(self, 'bm'):
-                    self.create_mesh_object(context)
-                self.add_point(mouse_pos)
+                    self.setup_bmesh(context)
+                if hasattr(self, 'bm'):
+                    self.add_point(mouse_pos)
                 
             self.add_draw_handler(context)
 
@@ -869,7 +912,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
 class SketchUpDrawTool(WorkSpaceTool):
     bl_space_type = 'VIEW_3D'
-    bl_context_mode = 'OBJECT'
+    bl_context_mode = 'EDIT_MESH'
     bl_idname = "sketchup.draw_tool_v2"
     bl_label = "SketchUp Draw Tool"
     bl_description = "Draw lines and outlines in a SketchUp-like manner"
