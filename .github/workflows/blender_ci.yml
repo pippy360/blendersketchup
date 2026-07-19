@@ -1,0 +1,57 @@
+name: Blender Addon CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        blender-version: ["3.6.0", "4.0.0", "4.2.0"]
+        
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+          
+      - name: Setup Cache
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: /opt/blender
+          key: ${{ runner.os }}-blender-${{ matrix.blender-version }}
+
+      - name: Download Blender
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt/blender
+          sudo chown -R $USER /opt/blender
+          cd /opt/blender
+          
+          VERSION=${{ matrix.blender-version }}
+          MAJOR_MINOR=$(echo $VERSION | cut -d. -f1,2)
+          
+          URL="https://download.blender.org/release/Blender${MAJOR_MINOR}/blender-${VERSION}-linux-x64.tar.xz"
+          echo "Downloading Blender from $URL"
+          
+          curl -L -o blender.tar.xz "$URL"
+          tar -xf blender.tar.xz --strip-components=1
+          rm blender.tar.xz
+          
+      - name: Create Addon Zip
+        run: |
+          mkdir -p build/blendersketchup
+          # Copy only python files that belong to the addon
+          cp *.py build/blendersketchup/ || true
+          cd build
+          zip -r blendersketchup.zip blendersketchup
+          echo "ADDON_ZIP_PATH=$(pwd)/blendersketchup.zip" >> $GITHUB_ENV
+          
+      - name: Run Tests
+        run: |
+          # Test installing and enabling the addon in a headless Blender instance
+          /opt/blender/blender --background --python tests/test_addon.py

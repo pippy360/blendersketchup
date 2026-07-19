@@ -18,10 +18,18 @@ from bpy.types import WorkSpaceTool
 from mathutils import Vector, geometry
 
 # --- Globals for Drawing ---
-try:
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-except ValueError:
-    shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
+shader = None
+
+def get_shader():
+    global shader
+    if shader is None:
+        try:
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        except ValueError:
+            shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
+        except Exception:
+            pass # Fails in background mode
+    return shader
 
 draw_handler_3d = None
 draw_handler_2d = None
@@ -56,11 +64,14 @@ def draw_callback_3d(self, context):
     if not draw_points or not mouse_pos:
         return
         
+    s = get_shader()
+    if not s: return
+
     coords = [draw_points[-1], mouse_pos]
-    batch = batch_for_shader(shader, 'LINES', {"pos": coords})
+    batch = batch_for_shader(s, 'LINES', {"pos": coords})
     
-    shader.bind()
-    shader.uniform_float("color", current_axis_color)
+    s.bind()
+    s.uniform_float("color", current_axis_color)
     
     # SketchUp draws thicker lines for locked axes
     if manual_axis_lock or shift_locked_axis:
@@ -68,7 +79,7 @@ def draw_callback_3d(self, context):
     else:
         gpu.state.line_width_set(2.0)
         
-    batch.draw(shader)
+    batch.draw(s)
     gpu.state.line_width_set(1.0)
     
     if constraint_snap_point is not None:
@@ -82,9 +93,9 @@ def draw_callback_3d(self, context):
             dot_coords.extend([p1, p2])
             
         if dot_coords:
-            dot_batch = batch_for_shader(shader, 'LINES', {"pos": dot_coords})
-            shader.uniform_float("color", current_axis_color)
-            dot_batch.draw(shader)
+            dot_batch = batch_for_shader(s, 'LINES', {"pos": dot_coords})
+            s.uniform_float("color", current_axis_color)
+            dot_batch.draw(s)
 
 def draw_callback_2d(self, context):
     global mouse_pos, last_point, typed_length, snap_type, hover_start_time, hover_last_pos
