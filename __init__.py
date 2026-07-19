@@ -614,7 +614,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         self.chain_verts = []
         context.workspace.status_text_set(None)
         self.remove_draw_handler()
-        context.window.cursor_modal_restore()
         
         if hasattr(self, 'bm'):
             delattr(self, 'bm')
@@ -886,7 +885,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             typed_length = ""
             snap_type = None
             self.chain_verts = []
-            context.window.cursor_modal_set('PAINT_BRUSH')
             self.undo_history = []
             self.redo_history = []
             
