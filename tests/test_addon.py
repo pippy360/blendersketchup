@@ -199,6 +199,9 @@ class TestUndoRedoBehavior(unittest.TestCase):
                 self.edges = self.MockElementList(self.MockEdge)
                 self.faces = self.MockElementList(self.MockFace)
                 
+            def normal_update(self):
+                pass
+                
             class MockElementList(list):
                 def __init__(self, elem_class):
                     super().__init__()

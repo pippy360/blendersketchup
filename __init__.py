@@ -600,6 +600,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def update_mesh(self):
         if hasattr(self, 'bm') and hasattr(self, 'obj') and self.obj:
+            self.bm.normal_update()
             bmesh.update_edit_mesh(self.obj.data)
 
     def end_tool(self, context):
