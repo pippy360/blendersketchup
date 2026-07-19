@@ -682,6 +682,18 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.report({'INFO'}, "SketchUp Draw Tool Deactivated")
             return {'FINISHED'}
             
+        is_mouse_in_window = True
+        if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
+           event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
+            is_mouse_in_window = False
+        else:
+            for region in context.area.regions:
+                if region.type != 'WINDOW':
+                    if region.x <= event.mouse_x <= region.x + region.width and \
+                       region.y <= event.mouse_y <= region.y + region.height:
+                        is_mouse_in_window = False
+                        break
+                        
         context.area.tag_redraw()
 
         if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT'}:
@@ -692,19 +704,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
         elif event.type == 'MOUSEMOVE':
             self.update_mouse_pos(context, event)
+            if not is_mouse_in_window:
+                return {'PASS_THROUGH'}
             return {'RUNNING_MODAL'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
-               event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
+            if not is_mouse_in_window:
                 return {'PASS_THROUGH'}
                 
-            for region in context.area.regions:
-                if region.type != 'WINDOW':
-                    if region.x <= event.mouse_x <= region.x + region.width and \
-                       region.y <= event.mouse_y <= region.y + region.height:
-                        return {'PASS_THROUGH'}
-                        
             if mouse_pos:
                 self.add_point(mouse_pos)
                 typed_length = ""
