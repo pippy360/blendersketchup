@@ -36,6 +36,7 @@ snap_type = None
 constraint_snap_point = None
 hover_start_time = 0.0
 hover_last_pos = None
+is_tool_running = False
 
 primary_axes = [
     Vector((1,0,0)), Vector((-1,0,0)),
@@ -586,13 +587,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.obj.data.update()
 
     def end_tool(self, context):
-        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type
+        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running
         draw_points = []
         mouse_pos = None
         manual_axis_lock = None
         shift_locked_axis = None
         typed_length = ""
         snap_type = None
+        is_tool_running = False
         self.chain_verts = []
         context.workspace.status_text_set(None)
         self.remove_draw_handler()
@@ -602,6 +604,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             if len(self.bm.verts) == 0:
                 bpy.data.objects.remove(self.obj)
             self.bm.free()
+            delattr(self, 'bm')
+            delattr(self, 'obj')
 
     def add_point(self, pos):
         global draw_points, manual_axis_lock, shift_locked_axis
@@ -713,6 +717,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 return {'PASS_THROUGH'}
                 
             if mouse_pos:
+                if not hasattr(self, 'bm'):
+                    self.create_mesh_object(context)
                 self.add_point(mouse_pos)
                 typed_length = ""
                 self.update_mouse_pos(context, event)
@@ -816,7 +822,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type
+            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running
+            if is_tool_running:
+                return {'PASS_THROUGH'}
+            is_tool_running = True
+            
             draw_points = []
             mouse_pos = None
             manual_axis_lock = None
@@ -828,9 +838,10 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.undo_history = []
             
             self.update_mouse_pos(context, event)
-            self.create_mesh_object(context)
             
             if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and mouse_pos:
+                if not hasattr(self, 'bm'):
+                    self.create_mesh_object(context)
                 self.add_point(mouse_pos)
                 
             self.add_draw_handler(context)
