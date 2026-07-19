@@ -746,6 +746,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         is_mouse_in_window = False
                         break
                         
+        if is_mouse_in_window and getattr(context.space_data, 'show_gizmo_navigate', False):
+            for region in context.area.regions:
+                if region.type == 'WINDOW':
+                    if event.mouse_region_x > region.width - 80 and \
+                       event.mouse_region_y > region.height - 230:
+                        is_mouse_in_window = False
+                    break
+                        
         if is_mouse_in_window:
             if not getattr(self, 'cursor_set', False):
                 context.window.cursor_modal_set('PAINT_BRUSH')
