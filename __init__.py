@@ -747,10 +747,28 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         break
                         
         if is_mouse_in_window and getattr(context.space_data, 'show_gizmo_navigate', False):
+            ui_scale = 1.0
+            use_region_overlap = False
+            if hasattr(context, 'preferences'):
+                if hasattr(context.preferences, 'view'):
+                    ui_scale = context.preferences.view.ui_scale
+                if hasattr(context.preferences, 'system'):
+                    use_region_overlap = context.preferences.system.use_region_overlap
+            
+            gizmo_width = 80 * ui_scale
+            gizmo_height = 280 * ui_scale
+            
+            ui_region_width = 0
+            if use_region_overlap:
+                for r in context.area.regions:
+                    if r.type == 'UI' and r.width > 1:
+                        ui_region_width = r.width
+                        break
+                        
             for region in context.area.regions:
                 if region.type == 'WINDOW':
-                    if event.mouse_region_x > region.width - 80 and \
-                       event.mouse_region_y > region.height - 230:
+                    if event.mouse_region_x > (region.width - ui_region_width - gizmo_width) and \
+                       event.mouse_region_y > (region.height - gizmo_height):
                         is_mouse_in_window = False
                     break
                         
