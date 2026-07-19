@@ -615,6 +615,9 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         self.chain_verts = []
         context.workspace.status_text_set(None)
         self.remove_draw_handler()
+        if getattr(self, 'cursor_set', False):
+            context.window.cursor_modal_restore()
+            self.cursor_set = False
         
         if hasattr(self, 'bm'):
             delattr(self, 'bm')
@@ -742,6 +745,15 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                        region.y <= event.mouse_y <= region.y + region.height:
                         is_mouse_in_window = False
                         break
+                        
+        if is_mouse_in_window:
+            if not getattr(self, 'cursor_set', False):
+                context.window.cursor_modal_set('PAINT_BRUSH')
+                self.cursor_set = True
+        else:
+            if getattr(self, 'cursor_set', False):
+                context.window.cursor_modal_restore()
+                self.cursor_set = False
                         
         context.area.tag_redraw()
 
