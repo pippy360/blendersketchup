@@ -755,8 +755,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 if hasattr(context.preferences, 'system'):
                     use_region_overlap = context.preferences.system.use_region_overlap
             
-            gizmo_width = 80 * ui_scale
-            gizmo_height = 280 * ui_scale
+            gizmo_width = 150 * ui_scale
+            gizmo_height = 400 * ui_scale
             
             ui_region_width = 0
             if use_region_overlap:
