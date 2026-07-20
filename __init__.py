@@ -757,8 +757,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         ui_scale *= context.preferences.system.ui_scale
                     use_region_overlap = getattr(context.preferences.system, 'use_region_overlap', False)
             
-            gizmo_width = 150 * ui_scale
-            gizmo_height = 400 * ui_scale
+            axis_gizmo_width = 130 * ui_scale
+            axis_gizmo_height = 140 * ui_scale
+            
+            nav_buttons_width = 70 * ui_scale
+            nav_buttons_height = 320 * ui_scale
             
             ui_region_width = 0
             if use_region_overlap:
@@ -769,8 +772,13 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         
             for region in context.area.regions:
                 if region.type == 'WINDOW':
-                    if event.mouse_region_x > (region.width - ui_region_width - gizmo_width) and \
-                       event.mouse_region_y > (region.height - gizmo_height):
+                    right_edge = region.width - ui_region_width
+                    is_over_axis = (event.mouse_region_x > right_edge - axis_gizmo_width) and \
+                                   (event.mouse_region_y > region.height - axis_gizmo_height)
+                    is_over_nav = (event.mouse_region_x > right_edge - nav_buttons_width) and \
+                                  (event.mouse_region_y > region.height - nav_buttons_height)
+                                  
+                    if is_over_axis or is_over_nav:
                         is_mouse_in_window = False
                     break
                         
