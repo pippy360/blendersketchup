@@ -55,8 +55,10 @@ class TestSnappingBehavior(unittest.TestCase):
         # Create a mock event
         self.event = MagicMock()
         self.event.ctrl = False
-        self.event.mouse_region_x = 100
-        self.event.mouse_region_y = 100
+        self.event.mouse_x = 100
+        self.event.mouse_y = 100
+        self.context.region.x = 0
+        self.context.region.y = 0
         
         # We need to temporarily mock the region coordinate conversion functions
         self.original_loc_3d_to_2d = self.addon.location_3d_to_region_2d

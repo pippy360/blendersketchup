@@ -249,7 +249,7 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
         
     region = context.region
     rv3d = context.region_data
-    mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+    mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
     snap_elements = context.scene.tool_settings.snap_elements
     snap_radius_px = 30.0
     
@@ -372,7 +372,7 @@ def get_mouse_3d_pos(context, event, last_point=None):
 
     region = context.region
     rv3d = context.region_data
-    coord = (event.mouse_region_x, event.mouse_region_y)
+    coord = (event.mouse_x - region.x, event.mouse_y - region.y)
     view_vector = region_2d_to_vector_3d(region, rv3d, coord)
     ray_origin = region_2d_to_origin_3d(region, rv3d, coord)
     depsgraph = context.view_layer.depsgraph
@@ -422,7 +422,7 @@ def get_mouse_3d_pos(context, event, last_point=None):
         if shift_locked_axis is None:
             # Determine locked axis by 2D screen projection
             last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
-            mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+            mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
             
             if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
                 mouse_dir_2d = (mouse_2d - last_pt_2d).normalized()
@@ -457,7 +457,7 @@ def get_mouse_3d_pos(context, event, last_point=None):
         # ONLY auto-snap to axis if we didn't snap to geometry!
         if not has_geo_snap:
             last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
-            mouse_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+            mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
             
             if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
                 cam_pos = rv3d.view_matrix.inverted().translation
@@ -771,10 +771,12 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             for region in context.area.regions:
                 if region.type == 'WINDOW':
                     right_edge = region.width - ui_region_width
-                    is_over_axis = (event.mouse_region_x > right_edge - axis_gizmo_width) and \
-                                   (event.mouse_region_y > region.height - axis_gizmo_height)
-                    is_over_nav = (event.mouse_region_x > right_edge - nav_buttons_width) and \
-                                  (event.mouse_region_y > region.height - nav_buttons_height)
+                    mouse_x = event.mouse_x - region.x
+                    mouse_y = event.mouse_y - region.y
+                    is_over_axis = (mouse_x > right_edge - axis_gizmo_width) and \
+                                   (mouse_y > region.height - axis_gizmo_height)
+                    is_over_nav = (mouse_x > right_edge - nav_buttons_width) and \
+                                  (mouse_y > region.height - nav_buttons_height)
                                   
                     if is_over_axis or is_over_nav:
                         is_mouse_in_window = False
