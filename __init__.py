@@ -757,11 +757,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         ui_scale *= context.preferences.system.ui_scale
                     use_region_overlap = getattr(context.preferences.system, 'use_region_overlap', False)
             
-            axis_gizmo_width = 130 * ui_scale
-            axis_gizmo_height = 140 * ui_scale
+            axis_gizmo_width = 150 * ui_scale
+            axis_gizmo_height = 160 * ui_scale
             
-            nav_buttons_width = 70 * ui_scale
-            nav_buttons_height = 320 * ui_scale
+            nav_buttons_width = 100 * ui_scale
+            nav_buttons_height = 450 * ui_scale
             
             ui_region_width = 0
             if use_region_overlap:
