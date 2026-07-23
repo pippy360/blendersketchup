@@ -708,11 +708,24 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             'prev_draw': list(draw_points)
         })
 
-        if len(self.chain_verts) >= 2:
-            world_first_co = self.obj.matrix_world @ self.chain_verts[0].co
+        if len(draw_points) >= 2:
+            world_first_co = draw_points[0]
             if (pos - world_first_co).length < 0.01:
-                v_first = self.chain_verts[0]
-                v_prev = self.chain_verts[-1]
+                local_first_pos = self.obj.matrix_world.inverted() @ draw_points[0]
+                local_last_pos = self.obj.matrix_world.inverted() @ draw_points[-1]
+                
+                self.bm.verts.ensure_lookup_table()
+                v_first = None
+                v_prev = None
+                for bv in self.bm.verts:
+                    if not v_first and (bv.co - local_first_pos).length < 0.001:
+                        v_first = bv
+                    if not v_prev and (bv.co - local_last_pos).length < 0.001:
+                        v_prev = bv
+                        
+                if not v_first: v_first = self.bm.verts.new(local_first_pos)
+                if not v_prev: v_prev = self.bm.verts.new(local_last_pos)
+                
                 e = None
                 try:
                     e = self.bm.edges.new((v_prev, v_first))
@@ -723,8 +736,13 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 for be in self.bm.edges: be.select = False
                 for bf in self.bm.faces: bf.select = False
                 
-                for cv in self.chain_verts:
-                    cv.select = True
+                for pt in draw_points:
+                    local_pt = self.obj.matrix_world.inverted() @ pt
+                    for bv in self.bm.verts:
+                        if (bv.co - local_pt).length < 0.001:
+                            bv.select = True
+                            break
+                            
                 if e:
                     e.select = True
                 
