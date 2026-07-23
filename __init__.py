@@ -1206,11 +1206,11 @@ def get_mouse_3d_pos_rect(context, event):
     if event.ctrl: use_snap = not use_snap
     
     if use_snap:
-        snap_obj, snap_loc, snap_normal, snap_idx = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
-        if snap_obj and snap_loc:
+        res = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
+        if res[0]:
             has_geo_snap = True
-            geo_snap_pos = snap_loc
-            geo_snap_normal = snap_normal
+            geo_snap_pos = res[1]
+            geo_snap_normal = res[2]
 
     # If we have a start pos, we MUST stay on the same plane
     if rect_start_pos is not None and rect_plane_axis is not None:
