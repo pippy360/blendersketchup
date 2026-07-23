@@ -679,8 +679,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         self.undo_history.append({
             'type': 'BREAK_CHAIN',
             'action_type': 'BREAK_CHAIN',
-            'geom': [],
-            'prev_chain': list(self.chain_verts),
+            'prev_chain_coords': [v.co.copy() for v in self.chain_verts],
             'prev_draw': list(draw_points)
         })
         draw_points.clear()
@@ -689,6 +688,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         shift_locked_axis = None
         shift_failed_lock = False
         typed_length = ""
+        bpy.ops.ed.undo_push(message="SketchUp Break Chain")
 
     def add_point(self, pos, is_redo=False):
         global draw_points, manual_axis_lock, shift_locked_axis, shift_failed_lock
@@ -699,73 +699,76 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         if not is_redo and hasattr(self, 'redo_history'):
             self.redo_history.clear()
 
-        step_geom = []
-        
-        if len(self.chain_verts) >= 2:
-            world_first_co = self.obj.matrix_world @ self.chain_verts[0].co
-            dist = (pos - world_first_co).length
-            if dist < 0.1:
-                v_prev = self.chain_verts[-1]
-                v_first = self.chain_verts[0]
-                
-                try:
-                    e = self.bm.edges.new((v_prev, v_first))
-                    step_geom.append(e)
-                except ValueError:
-                    pass
-                    
-                try:
-                    f = self.bm.faces.new(self.chain_verts)
-                    step_geom.append(f)
-                except Exception:
-                    pass
-                    
-                self.undo_history.append({
-                    'type': 'CLOSE_FACE',
-                    'action_type': 'ADD_POINT',
-                    'pos': pos.copy(),
-                    'geom': step_geom,
-                    'prev_chain': list(self.chain_verts),
-                    'prev_draw': list(draw_points)
-                })
-                
-                self.chain_verts.clear()
-                draw_points.clear()
-                manual_axis_lock = None
-                shift_locked_axis = None
-                shift_failed_lock = False
-                self.update_mesh()
-                self.report({'INFO'}, "Face Closed")
-                return
-
-        local_pos = self.obj.matrix_world.inverted() @ pos
-        v = self.bm.verts.new(local_pos)
-        step_geom.append(v)
-        
-        if len(self.chain_verts) > 0:
-            v_prev = self.chain_verts[-1]
-            try:
-                e = self.bm.edges.new((v_prev, v))
-                step_geom.append(e)
-            except ValueError:
-                pass
-                
-        self.chain_verts.append(v)
-        draw_points.append(pos.copy())
-        
+        # Save state for undo BEFORE we change anything
         self.undo_history.append({
             'type': 'ADD_POINT',
             'action_type': 'ADD_POINT',
             'pos': pos.copy(),
-            'geom': step_geom,
-            'prev_chain': list(self.chain_verts[:-1]),
-            'prev_draw': list(draw_points[:-1])
+            'prev_chain_coords': [v.co.copy() for v in self.chain_verts],
+            'prev_draw': list(draw_points)
         })
+
+        local_pos = self.obj.matrix_world.inverted() @ pos
+        v = self.bm.verts.new(local_pos)
+        
+        e = None
+        if len(self.chain_verts) > 0:
+            v_prev = self.chain_verts[-1]
+            try:
+                e = self.bm.edges.new((v_prev, v))
+            except ValueError:
+                pass
+                
+        draw_points.append(pos.copy())
+        
+        # Deselect everything
+        for bv in self.bm.verts: bv.select = False
+        for be in self.bm.edges: be.select = False
+        for bf in self.bm.faces: bf.select = False
+        
+        # Select newly added geometry
+        v.select = True
+        if e: e.select = True
+        if len(self.chain_verts) > 0:
+            self.chain_verts[-1].select = True
+            
+        self.update_mesh()
+        
+        # Perform Auto Merge & Split
+        ts = bpy.context.scene.tool_settings
+        orig_am = ts.use_mesh_automerge
+        orig_ams = ts.use_mesh_automerge_and_split
+        ts.use_mesh_automerge = True
+        ts.use_mesh_automerge_and_split = True
+        
+        bpy.ops.transform.translate(value=(0, 0, 0))
+        
+        ts.use_mesh_automerge = orig_am
+        ts.use_mesh_automerge_and_split = orig_ams
+        
+        # Push to Blender undo stack
+        bpy.ops.ed.undo_push(message="SketchUp Add Point")
+        
+        # Re-fetch the bmesh because topology might have changed completely
+        if hasattr(self, 'bm'):
+            self.bm.free()
+        self.bm = bmesh.from_edit_mesh(self.obj.data)
+        self.bm.verts.ensure_lookup_table()
+        
+        # Recover self.chain_verts (we only need the LAST vertex for the next segment)
+        best_v = None
+        best_d = 0.001
+        for bv in self.bm.verts:
+            d = (bv.co - local_pos).length
+            if d < best_d:
+                best_d = d
+                best_v = bv
+                
+        self.chain_verts = [best_v] if best_v else []
         
         manual_axis_lock = None
         shift_locked_axis = None
         shift_failed_lock = False
-        self.update_mesh()
 
     def update_mouse_pos(self, context, event):
         global mouse_pos, draw_points, snap_type
@@ -941,17 +944,29 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             if len(self.undo_history) > 0:
                 last_action = self.undo_history.pop()
                 
-                geom = last_action['geom']
-                for g in geom:
-                    if isinstance(g, bmesh.types.BMFace) and g.is_valid: self.bm.faces.remove(g)
-                for g in geom:
-                    if isinstance(g, bmesh.types.BMEdge) and g.is_valid: self.bm.edges.remove(g)
-                for g in geom:
-                    if isinstance(g, bmesh.types.BMVert) and g.is_valid: self.bm.verts.remove(g)
+                # Undo Blender mesh state
+                bpy.ops.ed.undo()
+                
+                if hasattr(self, 'bm'):
+                    self.bm.free()
+                self.bm = bmesh.from_edit_mesh(self.obj.data)
+                self.bm.verts.ensure_lookup_table()
+                
+                # Recover chain_verts
+                self.chain_verts = []
+                for co in last_action.get('prev_chain_coords', []):
+                    best_v = None
+                    best_d = 0.001
+                    for bv in self.bm.verts:
+                        d = (bv.co - co).length
+                        if d < best_d:
+                            best_d = d
+                            best_v = bv
+                    if best_v:
+                        self.chain_verts.append(best_v)
                         
-                self.chain_verts = last_action['prev_chain']
                 draw_points.clear()
-                draw_points.extend(last_action['prev_draw'])
+                draw_points.extend(last_action.get('prev_draw', []))
                 manual_axis_lock = None
                 shift_locked_axis = None
                 shift_failed_lock = False
@@ -964,7 +979,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                     'pos': last_action.get('pos')
                 })
                 
-                self.update_mesh()
                 self.update_mouse_pos(context, event)
                 self.report({'INFO'}, "Undid Last Action")
                 
