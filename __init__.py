@@ -766,6 +766,12 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 
         self.chain_verts = [best_v] if best_v else []
         
+        # Deselect everything so the last drawn line isn't highlighted in yellow
+        for bv in self.bm.verts: bv.select = False
+        for be in self.bm.edges: be.select = False
+        for bf in self.bm.faces: bf.select = False
+        self.update_mesh()
+        
         manual_axis_lock = None
         shift_locked_axis = None
         shift_failed_lock = False
