@@ -1067,8 +1067,8 @@ class SketchUpDrawTool(WorkSpaceTool):
     bl_cursor = 'PAINT_BRUSH'
     bl_widget = None
     bl_keymap = (
-        ("sketchup.draw_tool", {"type": 'MOUSEMOVE', "value": 'ANY'}, None),
-        ("sketchup.add_point", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("sketchup.draw_tool", {"type": 'MOUSEMOVE', "value": 'ANY', "any": True}, None),
+        ("sketchup.add_point", {"type": 'LEFTMOUSE', "value": 'PRESS', "any": True}, None),
     )
 
 
