@@ -806,8 +806,8 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             # nav_buttons_height = 450 * ui_scale  # Taller to cover Camera and Grid
             # nav_buttons_top = 160 * ui_scale     # Starts below axis gizmo
 
-            axis_gizmo_width = 210 * ui_scale
-            axis_gizmo_height = 210 * ui_scale
+            axis_gizmo_width = 250 * ui_scale
+            axis_gizmo_height = 300 * ui_scale
             
             nav_buttons_width = 120 * ui_scale    # Narrower to free up drawing space
             nav_buttons_height = 450 * ui_scale  # Taller to cover Camera and Grid
