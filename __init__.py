@@ -460,36 +460,34 @@ def get_mouse_3d_pos(context, event, last_point=None):
         active_axis = Vector((0, 0, 1))
     elif event.shift:
         if shift_locked_axis is None:
-            # Determine locked axis by 2D screen projection
+            # Lock to an axis only if we are currently hovering over it
             last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
             mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
             
             if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
-                mouse_dir_2d = (mouse_2d - last_pt_2d).normalized()
                 cam_pos = rv3d.view_matrix.inverted().translation
                 dist_to_cam = (last_point - cam_pos).length
                 
                 best_axis = None
-                best_dot = -1
+                best_dist = 20.0 # 20 pixels max perpendicular distance
+                
                 for axis in snap_dirs:
                     ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
                     if ax_pt_2d:
                         ax_dir_2d = (ax_pt_2d - last_pt_2d)
                         if ax_dir_2d.length > 0.001:
                             ax_dir_2d.normalize()
-                            d = mouse_dir_2d.dot(ax_dir_2d)
-                            if d > best_dot:
-                                best_dot = d
-                                best_axis = axis
+                            
+                            vec = mouse_2d - last_pt_2d
+                            proj_len = vec.dot(ax_dir_2d)
+                            if proj_len > 0:
+                                perp_vec = vec - ax_dir_2d * proj_len
+                                perp_dist = perp_vec.length
+                                if perp_dist < best_dist:
+                                    best_dist = perp_dist
+                                    best_axis = axis
                 if best_axis is not None:
                     shift_locked_axis = best_axis
-                    
-            if shift_locked_axis is None:
-                # Fallback to 3D projection if 2D failed
-                dir_vec = (raw_pos - last_point)
-                if dir_vec.length > 0.001:
-                    dir_vec.normalize()
-                    shift_locked_axis = max(snap_dirs, key=lambda v: dir_vec.dot(v))
                     
         active_axis = shift_locked_axis
     else:
