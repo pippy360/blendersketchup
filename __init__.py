@@ -708,6 +708,59 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             'prev_draw': list(draw_points)
         })
 
+        if len(self.chain_verts) >= 2:
+            world_first_co = self.obj.matrix_world @ self.chain_verts[0].co
+            if (pos - world_first_co).length < 0.01:
+                v_first = self.chain_verts[0]
+                v_prev = self.chain_verts[-1]
+                e = None
+                try:
+                    e = self.bm.edges.new((v_prev, v_first))
+                except ValueError:
+                    pass
+                
+                for bv in self.bm.verts: bv.select = False
+                for be in self.bm.edges: be.select = False
+                for bf in self.bm.faces: bf.select = False
+                
+                for cv in self.chain_verts:
+                    cv.select = True
+                if e:
+                    e.select = True
+                
+                self.update_mesh()
+                
+                ts = bpy.context.scene.tool_settings
+                orig_am = ts.use_mesh_automerge
+                orig_ams = ts.use_mesh_automerge_and_split
+                ts.use_mesh_automerge = True
+                ts.use_mesh_automerge_and_split = True
+                
+                bpy.ops.transform.translate(value=(0, 0, 0))
+                bpy.ops.mesh.edge_face_add()
+                
+                ts.use_mesh_automerge = orig_am
+                ts.use_mesh_automerge_and_split = orig_ams
+                
+                bpy.ops.ed.undo_push(message="SketchUp Close Face")
+                
+                self.chain_verts.clear()
+                draw_points.clear()
+                manual_axis_lock = None
+                shift_locked_axis = None
+                shift_failed_lock = False
+                self.report({'INFO'}, "Face Closed")
+                
+                if hasattr(self, 'bm'):
+                    self.bm.free()
+                self.bm = bmesh.from_edit_mesh(self.obj.data)
+                self.bm.verts.ensure_lookup_table()
+                for bv in self.bm.verts: bv.select = False
+                for be in self.bm.edges: be.select = False
+                for bf in self.bm.faces: bf.select = False
+                self.update_mesh()
+                return
+
         local_pos = self.obj.matrix_world.inverted() @ pos
         v = self.bm.verts.new(local_pos)
         
