@@ -45,6 +45,9 @@ constraint_snap_point = None
 hover_start_time = 0.0
 hover_last_pos = None
 is_tool_running = False
+active_draw_tool = None
+debug_gizmo_rects = []
+debug_hud_text = ""
 
 primary_axes = [
     Vector((1,0,0)), Vector((-1,0,0)),
@@ -98,7 +101,44 @@ def draw_callback_3d(self, context):
             dot_batch.draw(s)
 
 def draw_callback_2d(self, context):
-    global mouse_pos, last_point, typed_length, snap_type, hover_start_time, hover_last_pos
+    global mouse_pos, last_point, typed_length, snap_type, hover_start_time, hover_last_pos, debug_gizmo_rects, debug_hud_text
+    
+    if debug_gizmo_rects:
+        try:
+            shader = gpu.shader.from_builtin('2D_UNIFORM_COLOR')
+        except ValueError:
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        
+        gpu.state.blend_set('ALPHA')
+        for rect in debug_gizmo_rects:
+            if len(rect) == 5:
+                x, y, w, h, color = rect
+            else:
+                x, y, w, h = rect
+                color = (1.0, 0.0, 0.0, 0.3)
+                
+            coords = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            batch_bg = batch_for_shader(shader, 'TRI_FAN', {"pos": coords})
+            shader.bind()
+            shader.uniform_float("color", color)
+            batch_bg.draw(shader)
+            
+            batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": coords})
+            shader.uniform_float("color", (color[0], color[1], color[2], 1.0))
+            batch_outline.draw(shader)
+        gpu.state.blend_set('NONE')
+
+    props = getattr(context.scene, "sketchup_debug", None)
+    show_hud = props and props.show_hud_text
+
+    if debug_hud_text and show_hud:
+        font_id = 0
+        blf.position(font_id, 20.0, 40.0, 0.0)
+        blf.color(font_id, 1.0, 1.0, 0.0, 1.0)
+        try: blf.size(font_id, 16, 72)
+        except TypeError: blf.size(font_id, 16)
+        blf.draw(font_id, debug_hud_text)
+
     if not mouse_pos:
         return
         
@@ -604,7 +644,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             bmesh.update_edit_mesh(self.obj.data)
 
     def end_tool(self, context):
-        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running
+        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running, active_draw_tool
         draw_points = []
         mouse_pos = None
         manual_axis_lock = None
@@ -612,6 +652,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         typed_length = ""
         snap_type = None
         is_tool_running = False
+        active_draw_tool = None
         self.chain_verts = []
         context.workspace.status_text_set(None)
         self.remove_draw_handler()
@@ -725,7 +766,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             mouse_pos, snap_type = res
 
     def modal(self, context, event):
-        global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length
+        global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length, debug_gizmo_rects, debug_hud_text
         
         # Check if the user selected a different tool
         active_tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
@@ -735,12 +776,15 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             return {'FINISHED'}
             
         is_mouse_in_window = True
+        props = getattr(context.scene, "sketchup_debug", None)
+        disable_pass_through = props and props.disable_pass_through
+
         if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
            event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
             is_mouse_in_window = False
-        else:
+        elif not disable_pass_through:
             for region in context.area.regions:
-                if region.type != 'WINDOW':
+                if region.type in {'UI', 'TOOLS', 'HEADER', 'FOOTER', 'TOOL_HEADER'}:
                     if region.x <= event.mouse_x <= region.x + region.width and \
                        region.y <= event.mouse_y <= region.y + region.height:
                         is_mouse_in_window = False
@@ -755,12 +799,21 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 if hasattr(context.preferences, 'system'):
                     use_region_overlap = getattr(context.preferences.system, 'use_region_overlap', False)
             
-            axis_gizmo_width = 140 * ui_scale
-            axis_gizmo_height = 160 * ui_scale
+            # axis_gizmo_width = 210 * ui_scale
+            # axis_gizmo_height = 210 * ui_scale
             
-            nav_buttons_width = 80 * ui_scale
-            nav_buttons_height = 500 * ui_scale
+            # nav_buttons_width = 60 * ui_scale    # Narrower to free up drawing space
+            # nav_buttons_height = 450 * ui_scale  # Taller to cover Camera and Grid
+            # nav_buttons_top = 160 * ui_scale     # Starts below axis gizmo
+
+            axis_gizmo_width = 210 * ui_scale
+            axis_gizmo_height = 210 * ui_scale
             
+            nav_buttons_width = 120 * ui_scale    # Narrower to free up drawing space
+            nav_buttons_height = 450 * ui_scale  # Taller to cover Camera and Grid
+            nav_buttons_top = 160 * ui_scale     # Starts below axis gizmo
+
+
             ui_region_width = 0
             if use_region_overlap:
                 for r in context.area.regions:
@@ -768,28 +821,58 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         ui_region_width = r.width
                         break
                         
+            debug_gizmo_rects.clear()
+            window_region = None
+            props = getattr(context.scene, "sketchup_debug", None)
+            show_axis = props and props.show_axis_box if props else True
+            show_nav = props and props.show_nav_box if props else True
+            show_ui = props and props.show_ui_boxes if props else True
+            
             for region in context.area.regions:
                 if region.type == 'WINDOW':
+                    window_region = region
                     right_edge = region.width - ui_region_width
                     mouse_x = event.mouse_x - region.x
                     mouse_y = event.mouse_y - region.y
-                    is_over_axis = (mouse_x > right_edge - axis_gizmo_width) and \
-                                   (mouse_y > region.height - axis_gizmo_height)
-                    is_over_nav = (mouse_x > right_edge - nav_buttons_width) and \
-                                  (mouse_y > region.height - nav_buttons_height)
+                    
+                    axis_x = right_edge - axis_gizmo_width
+                    axis_y = region.height - axis_gizmo_height
+                    if show_axis:
+                        debug_gizmo_rects.append((axis_x, axis_y, axis_gizmo_width, axis_gizmo_height, (1.0, 0.0, 0.0, 0.3)))
+                    
+                    nav_top_y = region.height - nav_buttons_top
+                    nav_bottom_y = nav_top_y - nav_buttons_height
+                    nav_x = right_edge - nav_buttons_width
+                    if show_nav:
+                        debug_gizmo_rects.append((nav_x, nav_bottom_y, nav_buttons_width, nav_buttons_height, (1.0, 0.0, 0.0, 0.3)))
+                    
+                    debug_hud_text = f"Mouse: {mouse_x}, {mouse_y} | Scale: {ui_scale:.2f} | Overlap: {use_region_overlap} | UI_Width: {ui_region_width} | Window: {region.width}x{region.height}"
+                    
+                    is_over_axis = (mouse_x > axis_x) and (mouse_y > axis_y)
+                                   
+                    is_over_nav = (mouse_x > nav_x) and (nav_bottom_y < mouse_y < nav_top_y)
                                   
-                    if is_over_axis or is_over_nav:
+                    if not disable_pass_through and (is_over_axis or is_over_nav):
                         is_mouse_in_window = False
                     break
+            
+            if window_region and show_ui:
+                for region in context.area.regions:
+                    if region.type in {'UI', 'TOOLS', 'HEADER', 'FOOTER', 'TOOL_HEADER'}:
+                        rx = region.x - window_region.x
+                        ry = region.y - window_region.y
+                        debug_gizmo_rects.append((rx, ry, region.width, region.height, (0.0, 0.0, 1.0, 0.3)))
                         
         if is_mouse_in_window:
             if not getattr(self, 'cursor_set', False):
                 context.window.cursor_modal_set('PAINT_BRUSH')
                 self.cursor_set = True
+                self.report({'INFO'}, "Cursor changed to PEN")
         else:
             if getattr(self, 'cursor_set', False):
                 context.window.cursor_modal_restore()
                 self.cursor_set = False
+                self.report({'INFO'}, "Cursor restored to DEFAULT")
                         
         context.area.tag_redraw()
 
@@ -806,17 +889,20 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            if not is_mouse_in_window:
-                return {'PASS_THROUGH'}
+            props = getattr(context.scene, "sketchup_debug", None)
+            disable_pass_through = props and props.disable_pass_through
+            
+            if disable_pass_through:
+                if mouse_pos:
+                    if not hasattr(self, 'bm'):
+                        self.setup_bmesh(context)
+                    if hasattr(self, 'bm'):
+                        self.add_point(mouse_pos)
+                        typed_length = ""
+                    self.update_mouse_pos(context, event)
+                return {'RUNNING_MODAL'}
                 
-            if mouse_pos:
-                if not hasattr(self, 'bm'):
-                    self.setup_bmesh(context)
-                if hasattr(self, 'bm'):
-                    self.add_point(mouse_pos)
-                    typed_length = ""
-                self.update_mouse_pos(context, event)
-            return {'RUNNING_MODAL'}
+            return {'PASS_THROUGH'}
             
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
             self.break_chain()
@@ -922,10 +1008,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running
+            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running, active_draw_tool
             if is_tool_running:
                 return {'PASS_THROUGH'}
             is_tool_running = True
+            active_draw_tool = self
             
             draw_points = []
             mouse_pos = None
@@ -939,12 +1026,6 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             
             self.update_mouse_pos(context, event)
             
-            if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and mouse_pos:
-                if not hasattr(self, 'bm'):
-                    self.setup_bmesh(context)
-                if hasattr(self, 'bm'):
-                    self.add_point(mouse_pos)
-                
             self.add_draw_handler(context)
 
             context.window_manager.modal_handler_add(self)
@@ -954,6 +1035,25 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             self.report({'WARNING'}, "Active space must be a View3D")
             return {'CANCELLED'}
 
+
+class SKETCHUP_OT_add_point(bpy.types.Operator):
+    bl_idname = "sketchup.add_point"
+    bl_label = "Add Point"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def invoke(self, context, event):
+        global active_draw_tool, mouse_pos, typed_length
+        if not active_draw_tool:
+            bpy.ops.sketchup.draw_tool('INVOKE_DEFAULT')
+            
+        if active_draw_tool and mouse_pos:
+            if not hasattr(active_draw_tool, 'bm'):
+                active_draw_tool.setup_bmesh(context)
+            if hasattr(active_draw_tool, 'bm'):
+                active_draw_tool.add_point(mouse_pos)
+                typed_length = ""
+            active_draw_tool.update_mouse_pos(context, event)
+        return {'FINISHED'}
 
 # --- Workspace Tools ---
 
@@ -968,19 +1068,66 @@ class SketchUpDrawTool(WorkSpaceTool):
     bl_widget = None
     bl_keymap = (
         ("sketchup.draw_tool", {"type": 'MOUSEMOVE', "value": 'ANY'}, None),
-        ("sketchup.draw_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("sketchup.add_point", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
     )
 
 
 # --- Registration ---
 
+class SketchUpDebugProperties(bpy.types.PropertyGroup):
+    show_axis_box: bpy.props.BoolProperty(
+        name="Show Axis Gizmo Box",
+        description="Toggle the visibility of the red box over the top right axis gizmo",
+        default=False
+    )
+    show_nav_box: bpy.props.BoolProperty(
+        name="Show Navigation Buttons Box",
+        description="Toggle the visibility of the red box over the navigation buttons",
+        default=False
+    )
+    show_ui_boxes: bpy.props.BoolProperty(
+        name="Show UI Region Boxes",
+        description="Toggle the visibility of the blue boxes over standard UI regions",
+        default=False
+    )
+    show_hud_text: bpy.props.BoolProperty(
+        name="Show HUD Text",
+        description="Toggle the visibility of the debug HUD text",
+        default=False
+    )
+    disable_pass_through: bpy.props.BoolProperty(
+        name="Disable UI Pass-Through",
+        description="Disable passing clicks to the UI, allowing you to draw everywhere (UI buttons won't work)",
+        default=False
+    )
+
+class SKETCHUP_PT_debug_panel(bpy.types.Panel):
+    bl_label = "SketchUp Debug"
+    bl_idname = "SKETCHUP_PT_debug_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'SketchUp'
+    
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.sketchup_debug
+        layout.prop(props, "show_axis_box")
+        layout.prop(props, "show_nav_box")
+        layout.prop(props, "show_ui_boxes")
+        layout.prop(props, "show_hud_text")
+        layout.prop(props, "disable_pass_through")
+
 classes = (
     SKETCHUP_OT_draw_tool,
+    SKETCHUP_OT_add_point,
+    SketchUpDebugProperties,
+    SKETCHUP_PT_debug_panel,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.sketchup_debug = bpy.props.PointerProperty(type=SketchUpDebugProperties)
     bpy.utils.register_tool(SketchUpDrawTool, after={"builtin.measure"})
     bpy._sketchup_tool_class = SketchUpDrawTool
 
@@ -991,6 +1138,9 @@ def unregister():
             if old_cls: bpy.utils.unregister_class(old_cls)
             else: bpy.utils.unregister_class(cls)
         except Exception: pass
+            
+    try: del bpy.types.Scene.sketchup_debug
+    except Exception: pass
             
     old_tool = getattr(bpy, "_sketchup_tool_class", None)
     try:
