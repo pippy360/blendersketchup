@@ -71,7 +71,12 @@ def draw_callback_3d(self, context):
     s = get_shader()
     if not s: return
 
-    if getattr(active_draw_tool, "bl_idname", "") == "sketchup.rectangle_tool" and len(draw_points) >= 4:
+    is_rect_tool = False
+    if active_draw_tool is not None:
+        if type(active_draw_tool).__name__ == "SKETCHUP_OT_rectangle_tool":
+            is_rect_tool = True
+            
+    if is_rect_tool and len(draw_points) >= 4:
         coords = []
         for i in range(len(draw_points) - 1):
             coords.extend([draw_points[i], draw_points[i+1]])
