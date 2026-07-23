@@ -459,72 +459,76 @@ def get_mouse_3d_pos(context, event, last_point=None):
         active_axis = Vector((0, 1, 0))
     elif manual_axis_lock == 'Z':
         active_axis = Vector((0, 0, 1))
-    elif event.shift:
-        if shift_locked_axis is None and not shift_failed_lock:
-            # Lock to an axis only if we are currently hovering over it
-            last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
-            mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
-            
-            if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
-                cam_pos = rv3d.view_matrix.inverted().translation
-                dist_to_cam = (last_point - cam_pos).length
-                
-                best_axis = None
-                best_dist = 20.0 # 20 pixels max perpendicular distance
-                
-                for axis in snap_dirs:
-                    ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
-                    if ax_pt_2d:
-                        ax_dir_2d = (ax_pt_2d - last_pt_2d)
-                        if ax_dir_2d.length > 0.001:
-                            ax_dir_2d.normalize()
-                            
-                            vec = mouse_2d - last_pt_2d
-                            proj_len = vec.dot(ax_dir_2d)
-                            if proj_len > 0:
-                                perp_vec = vec - ax_dir_2d * proj_len
-                                perp_dist = perp_vec.length
-                                if perp_dist < best_dist:
-                                    best_dist = perp_dist
-                                    best_axis = axis
-                if best_axis is not None:
-                    shift_locked_axis = best_axis
-                else:
-                    shift_failed_lock = True
-                    
-        active_axis = shift_locked_axis
     else:
-        shift_locked_axis = None
-        # ONLY auto-snap to axis if we didn't snap to geometry!
-        if not has_geo_snap:
-            last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
-            mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
+        if event.shift:
+            if shift_locked_axis is None and not shift_failed_lock:
+                # Lock to an axis only if we are currently hovering over it
+                last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
+                mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
+                
+                if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
+                    cam_pos = rv3d.view_matrix.inverted().translation
+                    dist_to_cam = (last_point - cam_pos).length
+                    
+                    best_axis = None
+                    best_dist = 20.0 # 20 pixels max perpendicular distance
+                    
+                    for axis in snap_dirs:
+                        ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
+                        if ax_pt_2d:
+                            ax_dir_2d = (ax_pt_2d - last_pt_2d)
+                            if ax_dir_2d.length > 0.001:
+                                ax_dir_2d.normalize()
+                                
+                                vec = mouse_2d - last_pt_2d
+                                proj_len = vec.dot(ax_dir_2d)
+                                if proj_len > 0:
+                                    perp_vec = vec - ax_dir_2d * proj_len
+                                    perp_dist = perp_vec.length
+                                    if perp_dist < best_dist:
+                                        best_dist = perp_dist
+                                        best_axis = axis
+                    if best_axis is not None:
+                        shift_locked_axis = best_axis
+                    else:
+                        shift_failed_lock = True
+        else:
+            shift_locked_axis = None
+            shift_failed_lock = False
             
-            if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
-                cam_pos = rv3d.view_matrix.inverted().translation
-                dist_to_cam = (last_point - cam_pos).length
+        if shift_locked_axis is not None:
+            active_axis = shift_locked_axis
+        else:
+            # ONLY auto-snap to axis if we didn't snap to geometry!
+            if not has_geo_snap:
+                last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
+                mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
                 
-                best_axis = None
-                best_dist = 20.0 # 20 pixels max perpendicular distance
-                
-                for axis in primary_axes:
-                    ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
-                    if ax_pt_2d:
-                        ax_dir_2d = (ax_pt_2d - last_pt_2d)
-                        if ax_dir_2d.length > 0.001:
-                            ax_dir_2d.normalize()
-                            
-                            vec = mouse_2d - last_pt_2d
-                            proj_len = vec.dot(ax_dir_2d)
-                            if proj_len > 0: # Only snap if pointing in the positive direction of this axis vector
-                                perp_vec = vec - ax_dir_2d * proj_len
-                                perp_dist = perp_vec.length
-                                if perp_dist < best_dist:
-                                    best_dist = perp_dist
-                                    best_axis = axis
-                
-                if best_axis is not None:
-                    active_axis = best_axis
+                if last_pt_2d and (mouse_2d - last_pt_2d).length > 5.0:
+                    cam_pos = rv3d.view_matrix.inverted().translation
+                    dist_to_cam = (last_point - cam_pos).length
+                    
+                    best_axis = None
+                    best_dist = 20.0 # 20 pixels max perpendicular distance
+                    
+                    for axis in primary_axes:
+                        ax_pt_2d = location_3d_to_region_2d(region, rv3d, last_point + axis * (dist_to_cam * 0.5))
+                        if ax_pt_2d:
+                            ax_dir_2d = (ax_pt_2d - last_pt_2d)
+                            if ax_dir_2d.length > 0.001:
+                                ax_dir_2d.normalize()
+                                
+                                vec = mouse_2d - last_pt_2d
+                                proj_len = vec.dot(ax_dir_2d)
+                                if proj_len > 0: # Only snap if pointing in the positive direction of this axis vector
+                                    perp_vec = vec - ax_dir_2d * proj_len
+                                    perp_dist = perp_vec.length
+                                    if perp_dist < best_dist:
+                                        best_dist = perp_dist
+                                        best_axis = axis
+                    
+                    if best_axis is not None:
+                        active_axis = best_axis
 
     # 4. Apply Constraint
     if active_axis is not None:
