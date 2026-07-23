@@ -64,7 +64,7 @@ snap_dirs = [v.normalized() for v in [
 ]]
 
 def draw_callback_3d(self, context):
-    global constraint_snap_point
+    global constraint_snap_point, rect_plane_axis
     if not draw_points or not mouse_pos:
         return
         
@@ -76,17 +76,25 @@ def draw_callback_3d(self, context):
         if type(active_draw_tool).__name__ == "SKETCHUP_OT_rectangle_tool":
             is_rect_tool = True
             
+    color = current_axis_color
+    
     if is_rect_tool and len(draw_points) >= 4:
         coords = []
         for i in range(len(draw_points) - 1):
             coords.extend([draw_points[i], draw_points[i+1]])
+            
+        if rect_plane_axis is not None:
+            if abs(rect_plane_axis.x) > 0.9: color = (1.0, 0.2, 0.2, 1.0) # Red
+            elif abs(rect_plane_axis.y) > 0.9: color = (0.2, 1.0, 0.2, 1.0) # Green
+            elif abs(rect_plane_axis.z) > 0.9: color = (0.2, 0.5, 1.0, 1.0) # Blue
+            else: color = (1.0, 0.2, 0.8, 1.0) # Magenta
     else:
         coords = [draw_points[-1], mouse_pos]
         
     batch = batch_for_shader(s, 'LINES', {"pos": coords})
     
     s.bind()
-    s.uniform_float("color", current_axis_color)
+    s.uniform_float("color", color)
     
     # SketchUp draws thicker lines for locked axes
     if manual_axis_lock or shift_locked_axis:
@@ -109,7 +117,7 @@ def draw_callback_3d(self, context):
             
         if dot_coords:
             dot_batch = batch_for_shader(s, 'LINES', {"pos": dot_coords})
-            s.uniform_float("color", current_axis_color)
+            s.uniform_float("color", color)
             dot_batch.draw(s)
 
 def draw_callback_2d(self, context):
@@ -989,11 +997,14 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 return {'PASS_THROUGH'}
             return {'RUNNING_MODAL'}
 
-        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+        elif event.type == 'LEFTMOUSE':
             props = getattr(context.scene, "sketchup_debug", None)
             disable_pass_through = props and props.disable_pass_through
             
-            if disable_pass_through:
+            if not disable_pass_through and not is_mouse_in_window:
+                return {'PASS_THROUGH'}
+                
+            if event.value == 'PRESS':
                 if mouse_pos:
                     if not hasattr(self, 'bm'):
                         self.setup_bmesh(context)
@@ -1001,9 +1012,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                         self.add_point(mouse_pos)
                         typed_length = ""
                     self.update_mouse_pos(context, event)
-                return {'RUNNING_MODAL'}
-                
-            return {'PASS_THROUGH'}
+            return {'RUNNING_MODAL'}
             
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
             self.break_chain()
@@ -1202,58 +1211,60 @@ def get_mouse_3d_pos_rect(context, event):
     
     depsgraph = context.evaluated_depsgraph_get()
     
-    # 1. Check for geometry snapping (face)
-    has_geo_snap = False
-    geo_snap_pos = None
-    geo_snap_normal = None
+    hit, location, normal, index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
     
-    use_snap = getattr(context.scene.tool_settings, "use_snap", False)
-    if event.ctrl: use_snap = not use_snap
-    
-    if use_snap:
-        res = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
-        if res[0]:
-            has_geo_snap = True
-            geo_snap_pos = res[1]
-            geo_snap_normal = res[2]
+    raw_pos = location
+    if not hit:
+        plane_normal = Vector((0, 0, 1))
+        plane_point = Vector((0, 0, 0))
+        raw_pos = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, plane_point, plane_normal)
+        if raw_pos is None:
+            raw_pos = ray_origin + view_vector * 10.0
+            
+    geo_snap_pos, snap_type = apply_geometry_snapping(context, event, hit, raw_pos, index, obj, matrix)
+    has_geo_snap = (snap_type is not None)
 
     # If we have a start pos, we MUST stay on the same plane
     if rect_start_pos is not None and rect_plane_axis is not None:
         # Intersect with the plane defined by rect_start_pos and rect_plane_axis
-        hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, rect_start_pos, rect_plane_axis)
-        if hit:
+        plane_hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, rect_start_pos, rect_plane_axis)
+        if plane_hit:
             if has_geo_snap:
                 # Snap to geometry but project onto our plane
                 proj_dist = (geo_snap_pos - rect_start_pos).dot(rect_plane_axis)
-                return geo_snap_pos - rect_plane_axis * proj_dist, 'GEOMETRY'
+                return geo_snap_pos - rect_plane_axis * proj_dist, snap_type
             
             # Grid snapping
+            use_snap = getattr(context.scene.tool_settings, "use_snap", False)
+            if event.ctrl: use_snap = not use_snap
             if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements):
                 grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
-                target_x = round(hit.x / grid_scale) * grid_scale
-                target_y = round(hit.y / grid_scale) * grid_scale
-                target_z = round(hit.z / grid_scale) * grid_scale
-                if rect_plane_axis.z > 0.9: hit = Vector((target_x, target_y, hit.z))
-                elif rect_plane_axis.y > 0.9: hit = Vector((target_x, hit.y, target_z))
-                elif rect_plane_axis.x > 0.9: hit = Vector((hit.x, target_y, target_z))
-                return hit, 'GRID'
+                target_x = round(plane_hit.x / grid_scale) * grid_scale
+                target_y = round(plane_hit.y / grid_scale) * grid_scale
+                target_z = round(plane_hit.z / grid_scale) * grid_scale
+                if rect_plane_axis.z > 0.9: plane_hit = Vector((target_x, target_y, plane_hit.z))
+                elif rect_plane_axis.y > 0.9: plane_hit = Vector((target_x, plane_hit.y, target_z))
+                elif rect_plane_axis.x > 0.9: plane_hit = Vector((plane_hit.x, target_y, target_z))
+                return plane_hit, 'GRID'
                 
-            return hit, None
+            return plane_hit, None
             
     # We don't have a start pos, or we don't have an axis yet
     if has_geo_snap:
-        return geo_snap_pos, 'GEOMETRY'
+        return geo_snap_pos, snap_type
         
     # Default to XY plane (ground) if no snap
-    hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, Vector((0,0,0)), Vector((0,0,1)))
-    if hit:
+    plane_hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, Vector((0,0,0)), Vector((0,0,1)))
+    if plane_hit:
+        use_snap = getattr(context.scene.tool_settings, "use_snap", False)
+        if event.ctrl: use_snap = not use_snap
         if use_snap and ('INCREMENT' in context.scene.tool_settings.snap_elements or 'GRID' in context.scene.tool_settings.snap_elements):
             grid_scale = getattr(context.space_data.overlay, "grid_scale", 1.0) if getattr(context, "space_data", None) and hasattr(context.space_data, "overlay") else 1.0
-            target_x = round(hit.x / grid_scale) * grid_scale
-            target_y = round(hit.y / grid_scale) * grid_scale
-            hit = Vector((target_x, target_y, 0))
-            return hit, 'GRID'
-        return hit, None
+            target_x = round(plane_hit.x / grid_scale) * grid_scale
+            target_y = round(plane_hit.y / grid_scale) * grid_scale
+            plane_hit = Vector((target_x, target_y, 0))
+            return plane_hit, 'GRID'
+        return plane_hit, None
         
     return ray_origin + view_vector * 10, None
 
@@ -1374,11 +1385,12 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
         rect_start_pos = None
 
     def update_mouse_pos(self, context, event):
-        global mouse_pos, draw_points, rect_start_pos, rect_plane_axis
+        global mouse_pos, draw_points, rect_start_pos, rect_plane_axis, snap_type
         res = get_mouse_3d_pos_rect(context, event)
         if res:
-            m_pos, _ = res
+            m_pos, s_type = res
             mouse_pos = m_pos
+            snap_type = s_type
             if rect_start_pos:
                 # Calculate the 4 corners for draw_points
                 if rect_plane_axis is not None:
@@ -1402,41 +1414,114 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
             self.end_tool(context)
             return {'FINISHED'}
 
+        is_mouse_in_window = True
+        props = getattr(context.scene, "sketchup_debug", None)
+        disable_pass_through = props and props.disable_pass_through
+
+        if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
+           event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
+            is_mouse_in_window = False
+        elif not disable_pass_through:
+            for region in context.area.regions:
+                if region.type in {'UI', 'TOOLS', 'HEADER', 'FOOTER', 'TOOL_HEADER'}:
+                    if region.x <= event.mouse_x <= region.x + region.width and \
+                       region.y <= event.mouse_y <= region.y + region.height:
+                        is_mouse_in_window = False
+                        break
+                        
+        if is_mouse_in_window and getattr(context.space_data, 'show_gizmo_navigate', False):
+            ui_scale = 1.0
+            use_region_overlap = False
+            if hasattr(context, 'preferences'):
+                if hasattr(context.preferences, 'view') and hasattr(context.preferences.view, 'ui_scale'):
+                    ui_scale = context.preferences.view.ui_scale
+                if hasattr(context.preferences, 'system'):
+                    use_region_overlap = getattr(context.preferences.system, 'use_region_overlap', False)
+            
+            axis_gizmo_width = 250 * ui_scale
+            axis_gizmo_height = 300 * ui_scale
+            
+            nav_buttons_width = 120 * ui_scale
+            nav_buttons_height = 450 * ui_scale
+            nav_buttons_top = 160 * ui_scale
+
+            ui_region_width = 0
+            if use_region_overlap:
+                for r in context.area.regions:
+                    if r.type == 'UI' and r.width > 1:
+                        ui_region_width = r.width
+                        break
+            
+            for region in context.area.regions:
+                if region.type == 'WINDOW':
+                    right_edge = region.width - ui_region_width
+                    mouse_x = event.mouse_x - region.x
+                    mouse_y = event.mouse_y - region.y
+                    
+                    axis_x = right_edge - axis_gizmo_width
+                    axis_y = region.height - axis_gizmo_height
+                    
+                    nav_top_y = region.height - nav_buttons_top
+                    nav_bottom_y = nav_top_y - nav_buttons_height
+                    nav_x = right_edge - nav_buttons_width
+                    
+                    is_over_axis = (mouse_x > axis_x) and (mouse_y > axis_y)
+                    is_over_nav = (mouse_x > nav_x) and (nav_bottom_y < mouse_y < nav_top_y)
+                    
+                    if not disable_pass_through and (is_over_axis or is_over_nav):
+                        is_mouse_in_window = False
+                    break
+
+        if is_mouse_in_window:
+            if not getattr(self, 'cursor_set', False):
+                context.window.cursor_modal_set('PAINT_BRUSH')
+                self.cursor_set = True
+        else:
+            if getattr(self, 'cursor_set', False):
+                context.window.cursor_modal_restore()
+                self.cursor_set = False
+
         if event.type == 'MOUSEMOVE':
             self.update_mouse_pos(context, event)
             context.area.tag_redraw()
+            if not is_mouse_in_window:
+                return {'PASS_THROUGH'}
             return {'RUNNING_MODAL'}
             
-        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            if mouse_pos:
-                if not hasattr(self, 'bm'):
-                    self.setup_bmesh(context)
-                    
-                if rect_start_pos is None:
-                    # First click
-                    rect_start_pos = mouse_pos.copy()
-                    
-                    # Determine plane axis
-                    region = context.region
-                    rv3d = context.region_data
-                    mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
-                    view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
-                    
-                    # Snap normal to closest axis
-                    best_axis = Vector((0,0,1))
-                    best_dot = 0
-                    for axis in [Vector((1,0,0)), Vector((0,1,0)), Vector((0,0,1))]:
-                        dot = abs(view_vector.dot(axis))
-                        if dot > best_dot:
-                            best_dot = dot
-                            best_axis = axis
-                    rect_plane_axis = best_axis
-                    draw_points = [rect_start_pos]
-                else:
-                    # Second click
-                    if hasattr(self, 'bm'):
-                        self.add_rectangle(mouse_pos)
-                        draw_points = []
+        elif event.type == 'LEFTMOUSE':
+            if not disable_pass_through and not is_mouse_in_window:
+                return {'PASS_THROUGH'}
+
+            if event.value == 'PRESS':
+                if mouse_pos:
+                    if not hasattr(self, 'bm'):
+                        self.setup_bmesh(context)
+                        
+                    if rect_start_pos is None:
+                        # First click
+                        rect_start_pos = mouse_pos.copy()
+                        
+                        # Determine plane axis
+                        region = context.region
+                        rv3d = context.region_data
+                        mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+                        view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
+                        
+                        # Snap normal to closest axis
+                        best_axis = Vector((0,0,1))
+                        best_dot = 0
+                        for axis in [Vector((1,0,0)), Vector((0,1,0)), Vector((0,0,1))]:
+                            dot = abs(view_vector.dot(axis))
+                            if dot > best_dot:
+                                best_dot = dot
+                                best_axis = axis
+                        rect_plane_axis = best_axis
+                        draw_points = [rect_start_pos]
+                    else:
+                        # Second click
+                        if hasattr(self, 'bm'):
+                            self.add_rectangle(mouse_pos)
+                            draw_points = []
             return {'RUNNING_MODAL'}
             
         elif event.type == 'ESC' and event.value == 'PRESS':
@@ -1474,7 +1559,7 @@ class SketchUpRectangleTool(WorkSpaceTool):
     bl_idname = "sketchup.rectangle_tool"
     bl_label = "SketchUp Rectangle Tool"
     bl_description = "Draw rectangles in a SketchUp-like manner"
-    bl_icon = "ops.mesh.primitive_plane_add"
+    bl_icon = "ops.gpencil.primitive_box"
     bl_cursor = 'PAINT_BRUSH'
     bl_widget = None
     bl_keymap = (
