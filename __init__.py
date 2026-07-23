@@ -38,6 +38,7 @@ mouse_pos = None
 
 manual_axis_lock = None  # None, 'X', 'Y', 'Z'
 shift_locked_axis = None # Vector
+shift_failed_lock = False
 current_axis_color = (0.0, 0.0, 0.0, 1.0) # Black default
 typed_length = ""
 snap_type = None
@@ -406,7 +407,7 @@ def apply_geometry_snapping(context, event, hit, location, index, obj, matrix):
     return location, None
 
 def get_mouse_3d_pos(context, event, last_point=None):
-    global manual_axis_lock, shift_locked_axis, current_axis_color, constraint_snap_point
+    global manual_axis_lock, shift_locked_axis, shift_failed_lock, current_axis_color, constraint_snap_point
     
     constraint_snap_point = None
 
@@ -459,7 +460,7 @@ def get_mouse_3d_pos(context, event, last_point=None):
     elif manual_axis_lock == 'Z':
         active_axis = Vector((0, 0, 1))
     elif event.shift:
-        if shift_locked_axis is None:
+        if shift_locked_axis is None and not shift_failed_lock:
             # Lock to an axis only if we are currently hovering over it
             last_pt_2d = location_3d_to_region_2d(region, rv3d, last_point)
             mouse_2d = Vector((event.mouse_x - region.x, event.mouse_y - region.y))
@@ -488,6 +489,8 @@ def get_mouse_3d_pos(context, event, last_point=None):
                                     best_axis = axis
                 if best_axis is not None:
                     shift_locked_axis = best_axis
+                else:
+                    shift_failed_lock = True
                     
         active_axis = shift_locked_axis
     else:
@@ -642,11 +645,12 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             bmesh.update_edit_mesh(self.obj.data)
 
     def end_tool(self, context):
-        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running, active_draw_tool
+        global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, shift_failed_lock, typed_length, snap_type, is_tool_running, active_draw_tool
         draw_points = []
         mouse_pos = None
         manual_axis_lock = None
         shift_locked_axis = None
+        shift_failed_lock = False
         typed_length = ""
         snap_type = None
         is_tool_running = False
@@ -664,7 +668,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             delattr(self, 'obj')
 
     def break_chain(self, is_redo=False):
-        global draw_points, manual_axis_lock, shift_locked_axis, typed_length
+        global draw_points, manual_axis_lock, shift_locked_axis, shift_failed_lock, typed_length
         if not is_redo and hasattr(self, 'redo_history'):
             self.redo_history.clear()
             
@@ -679,10 +683,11 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         self.chain_verts.clear()
         manual_axis_lock = None
         shift_locked_axis = None
+        shift_failed_lock = False
         typed_length = ""
 
     def add_point(self, pos, is_redo=False):
-        global draw_points, manual_axis_lock, shift_locked_axis
+        global draw_points, manual_axis_lock, shift_locked_axis, shift_failed_lock
         
         if not hasattr(self, 'bm') or not self.obj:
             return
@@ -724,6 +729,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 draw_points.clear()
                 manual_axis_lock = None
                 shift_locked_axis = None
+                shift_failed_lock = False
                 self.update_mesh()
                 self.report({'INFO'}, "Face Closed")
                 return
@@ -754,6 +760,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         
         manual_axis_lock = None
         shift_locked_axis = None
+        shift_failed_lock = False
         self.update_mesh()
 
     def update_mouse_pos(self, context, event):
@@ -764,7 +771,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             mouse_pos, snap_type = res
 
     def modal(self, context, event):
-        global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, typed_length, debug_gizmo_rects, debug_hud_text
+        global mouse_pos, draw_points, manual_axis_lock, shift_locked_axis, shift_failed_lock, typed_length, debug_gizmo_rects, debug_hud_text
         
         # Check if the user selected a different tool
         active_tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
@@ -877,6 +884,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
         if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT'}:
             if event.value == 'RELEASE':
                 shift_locked_axis = None
+                shift_failed_lock = False
             self.update_mouse_pos(context, event)
             return {'PASS_THROUGH'}
 
@@ -942,6 +950,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
                 draw_points.extend(last_action['prev_draw'])
                 manual_axis_lock = None
                 shift_locked_axis = None
+                shift_failed_lock = False
                 typed_length = ""
                 
                 if not hasattr(self, 'redo_history'):
@@ -1006,7 +1015,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, typed_length, snap_type, is_tool_running, active_draw_tool
+            global draw_points, mouse_pos, manual_axis_lock, shift_locked_axis, shift_failed_lock, typed_length, snap_type, is_tool_running, active_draw_tool
             if is_tool_running:
                 return {'PASS_THROUGH'}
             is_tool_running = True
@@ -1016,6 +1025,7 @@ class SKETCHUP_OT_draw_tool(bpy.types.Operator):
             mouse_pos = None
             manual_axis_lock = None
             shift_locked_axis = None
+            shift_failed_lock = False
             typed_length = ""
             snap_type = None
             self.chain_verts = []
