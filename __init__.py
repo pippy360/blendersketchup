@@ -1976,17 +1976,21 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         local_normal = face.normal.copy()
                         edges_to_dissolve = []
                         is_full_face = True
+                        has_non_coplanar_adjacent = False
                         for edge in face.edges:
-                            if len(edge.link_faces) > 2:
-                                is_full_face = False
-                            
                             for adj_face in edge.link_faces:
                                 if adj_face != face:
-                                    if abs(adj_face.normal.dot(local_normal)) > 0.999:
+                                    dot_val = abs(adj_face.normal.dot(local_normal))
+                                    if dot_val > 0.999:
                                         is_full_face = False
-                                    elif abs(adj_face.normal.dot(local_normal)) < 0.001:
-                                        if edge not in edges_to_dissolve:
-                                            edges_to_dissolve.append(edge)
+                                    else:
+                                        has_non_coplanar_adjacent = True
+                                        
+                                    if dot_val < 0.001:
+                                        edges_to_dissolve.append(edge)
+                        
+                        if not has_non_coplanar_adjacent:
+                            is_full_face = False
                         
                         if is_full_face:
                             extruded_face = face
