@@ -1818,7 +1818,30 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
         
         if hasattr(self, 'bm') and self.bm:
             bmesh.ops.remove_doubles(self.bm, verts=self.bm.verts, dist=0.0001)
-            bmesh.ops.dissolve_limit(self.bm, angle_limit=0.01, verts=self.bm.verts, edges=self.bm.edges)
+            
+            # Only dissolve edges and limit if we pulled outward (distance >= 0)
+            # If we pushed inward (distance < 0), dissolving would create folded L-shapes (red wire edges)
+            dist = getattr(self, 'push_pull_final_distance', 0.0)
+            edges_to_dissolve = getattr(self, 'push_pull_edges_to_dissolve', [])
+            
+            if dist >= -0.001:
+                valid_edges = [e for e in edges_to_dissolve if e.is_valid]
+                if valid_edges:
+                    bmesh.ops.dissolve_edges(self.bm, edges=valid_edges)
+                bmesh.ops.dissolve_limit(self.bm, angle_limit=0.01, verts=self.bm.verts, edges=self.bm.edges)
+            else:
+                # Still run dissolve limit, but NOT on the folded back side walls!
+                # Actually, dissolve_limit might merge the folded-back side walls into the top faces anyway, creating wire edges.
+                # To prevent this, we just don't run dissolve_limit on the whole mesh.
+                pass
+                
+            if abs(dist) < 0.001:
+                # If they pushed back to exactly 0, remove_doubles collapses the 0-area side walls
+                # which leaves wire edges behind. We delete them to keep the mesh clean.
+                wire_edges = [e for e in self.bm.edges if e.is_valid and len(e.link_faces) == 0]
+                if wire_edges:
+                    bmesh.ops.delete(self.bm, geom=wire_edges, context='EDGES')
+                    
             bmesh.update_edit_mesh(self.obj.data)
             
         bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
@@ -1938,6 +1961,7 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                     pt_on_extrusion_line = intersect_pts[0]
                     delta_3d = pt_on_extrusion_line - push_pull_start_3d_pt
                     dist = delta_3d.dot(push_pull_face_normal)
+                    self.push_pull_final_distance = dist
                     
                     if push_pull_typed_length:
                         try:
@@ -1976,21 +2000,18 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         local_normal = face.normal.copy()
                         edges_to_dissolve = []
                         is_full_face = True
-                        has_non_coplanar_adjacent = False
                         for edge in face.edges:
+                            if len(edge.link_faces) != 2:
+                                is_full_face = False
+                                
                             for adj_face in edge.link_faces:
                                 if adj_face != face:
                                     dot_val = abs(adj_face.normal.dot(local_normal))
-                                    if dot_val > 0.999:
-                                        is_full_face = False
-                                    else:
-                                        has_non_coplanar_adjacent = True
-                                        
                                     if dot_val < 0.001:
                                         edges_to_dissolve.append(edge)
-                        
-                        if not has_non_coplanar_adjacent:
-                            is_full_face = False
+                                        
+                        self.push_pull_edges_to_dissolve = edges_to_dissolve
+                        self.push_pull_final_distance = 0.0
                         
                         if is_full_face:
                             extruded_face = face
@@ -2003,11 +2024,8 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                             # Delete the original face to ensure edges are manifold
                             if face.is_valid:
                                 bmesh.ops.delete(self.bm, geom=[face], context='FACES_ONLY')
-                            
-                            # Dissolve redundant edges
-                            valid_edges = [e for e in edges_to_dissolve if e.is_valid]
-                            if valid_edges:
-                                bmesh.ops.dissolve_edges(self.bm, edges=valid_edges)
+                                
+                            # We DEFER dissolve_edges to finish_push_pull so we can check if it was pulled or pushed
                         
                         # The newly extruded face becomes the active face for movement
                         if extruded_face:
