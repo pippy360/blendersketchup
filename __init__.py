@@ -1518,10 +1518,11 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
                 except RuntimeError:
                     pass
             
-            if hasattr(self, 'bm'):
-                self.bm.free()
-            self.bm = bmesh.from_edit_mesh(self.obj.data)
-            self.bm.verts.ensure_lookup_table()
+            if hasattr(self, 'obj') and self.obj:
+                if hasattr(self, 'bm'):
+                    self.bm.free()
+                self.bm = bmesh.from_edit_mesh(self.obj.data)
+                self.bm.verts.ensure_lookup_table()
             
             rect_start_pos = None
             draw_points = []
@@ -1907,13 +1908,16 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                 ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_coord)
                 view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
                 
-                # Intersect ray with a plane parallel to the view plane, passing through start point
-                view_plane_normal = -rv3d.view_matrix.inverted().to_3x3().col[2]
-                hit_pt = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, push_pull_start_3d_pt, view_plane_normal)
+                # Find the closest point between the extrusion axis and the mouse ray
+                extrusion_p1 = push_pull_start_3d_pt
+                extrusion_p2 = push_pull_start_3d_pt + push_pull_face_normal
+                ray_p2 = ray_origin + view_vector
                 
-                if hit_pt:
-                    delta_3d = hit_pt - push_pull_start_3d_pt
-                    # Project delta onto the face normal to get distance
+                intersect_pts = geometry.intersect_line_line(extrusion_p1, extrusion_p2, ray_origin, ray_p2)
+                
+                if intersect_pts:
+                    pt_on_extrusion_line = intersect_pts[0]
+                    delta_3d = pt_on_extrusion_line - push_pull_start_3d_pt
                     dist = delta_3d.dot(push_pull_face_normal)
                     
                     if push_pull_typed_length:
@@ -1949,10 +1953,29 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         
                         push_pull_start_3d_pt = self.obj.matrix_world @ face.calc_center_median()
                         
+                        # Find edges to dissolve for seamless extrusion
+                        local_normal = face.normal.copy()
+                        edges_to_dissolve = []
+                        for edge in face.edges:
+                            if len(edge.link_faces) == 2:
+                                adj_face = edge.link_faces[0] if edge.link_faces[0] != face else edge.link_faces[1]
+                                if abs(adj_face.normal.dot(local_normal)) < 0.001:
+                                    edges_to_dissolve.append(edge)
+                        
                         # Extrude
                         res = bmesh.ops.extrude_face_region(self.bm, geom=[face])
                         new_faces = [e for e in res['geom'] if isinstance(e, bmesh.types.BMFace)]
                         extruded_face = new_faces[0] if new_faces else None
+                        
+                        # Delete the original face to ensure edges are manifold (2 faces max)
+                        # so that bmesh.ops.dissolve_edges can successfully merge the coplanar side walls.
+                        if face.is_valid:
+                            bmesh.ops.delete(self.bm, geom=[face], context='FACES_ONLY')
+                        
+                        # Dissolve redundant edges
+                        valid_edges = [e for e in edges_to_dissolve if e.is_valid]
+                        if valid_edges:
+                            bmesh.ops.dissolve_edges(self.bm, edges=valid_edges)
                         
                         # The newly extruded face becomes the active face for movement
                         if extruded_face:
