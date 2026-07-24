@@ -1810,6 +1810,20 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
         if getattr(context, 'area', None):
             context.area.tag_redraw()
             
+    def finish_push_pull(self, context, event):
+        global push_pull_active_face_index, push_pull_drag_state, push_pull_typed_length
+        push_pull_active_face_index = None
+        push_pull_drag_state = 0
+        push_pull_typed_length = ""
+        
+        if hasattr(self, 'bm') and self.bm:
+            bmesh.ops.remove_doubles(self.bm, verts=self.bm.verts, dist=0.0001)
+            bmesh.ops.dissolve_limit(self.bm, angle_limit=0.01, verts=self.bm.verts, edges=self.bm.edges)
+            bmesh.update_edit_mesh(self.obj.data)
+            
+        bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
+        self.update_hover(context, event)
+
     def update_hover(self, context, event):
         global push_pull_hover_face_index
         region = context.region
@@ -1996,22 +2010,14 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         push_pull_typed_length = ""
                 else:
                     # Second click to finish
-                    push_pull_active_face_index = None
-                    push_pull_drag_state = 0
-                    push_pull_typed_length = ""
-                    bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
-                    self.update_hover(context, event)
+                    self.finish_push_pull(context, event)
                     
             elif event.value == 'RELEASE':
                 if push_pull_active_face_index is not None and push_pull_drag_state == 1:
                     current_mouse = Vector((event.mouse_x, event.mouse_y))
                     if (current_mouse - push_pull_start_mouse_pos).length > 5:
                         # They dragged and released, finish!
-                        push_pull_active_face_index = None
-                        push_pull_drag_state = 0
-                        push_pull_typed_length = ""
-                        bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
-                        self.update_hover(context, event)
+                        self.finish_push_pull(context, event)
                     else:
                         # Click-release, switch to move mode
                         push_pull_drag_state = 2
@@ -2020,11 +2026,7 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
             
         elif event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
             if push_pull_active_face_index is not None:
-                push_pull_active_face_index = None
-                push_pull_drag_state = 0
-                push_pull_typed_length = ""
-                bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
-                self.update_hover(context, event)
+                self.finish_push_pull(context, event)
             return {'RUNNING_MODAL'}
             
         elif event.type == 'BACK_SPACE' and event.value == 'PRESS':
