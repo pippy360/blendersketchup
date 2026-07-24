@@ -1977,14 +1977,16 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         edges_to_dissolve = []
                         is_full_face = True
                         for edge in face.edges:
-                            if len(edge.link_faces) != 2:
+                            if len(edge.link_faces) > 2:
                                 is_full_face = False
-                            else:
-                                adj_face = edge.link_faces[0] if edge.link_faces[0] != face else edge.link_faces[1]
-                                if abs(adj_face.normal.dot(local_normal)) > 0.999:
-                                    is_full_face = False
-                                elif abs(adj_face.normal.dot(local_normal)) < 0.001:
-                                    edges_to_dissolve.append(edge)
+                            
+                            for adj_face in edge.link_faces:
+                                if adj_face != face:
+                                    if abs(adj_face.normal.dot(local_normal)) > 0.999:
+                                        is_full_face = False
+                                    elif abs(adj_face.normal.dot(local_normal)) < 0.001:
+                                        if edge not in edges_to_dissolve:
+                                            edges_to_dissolve.append(edge)
                         
                         if is_full_face:
                             extruded_face = face
