@@ -1254,7 +1254,15 @@ def get_mouse_3d_pos_rect(context, event):
         return geo_snap_pos, snap_type
         
     # Default to XY plane (ground) if no snap
-    plane_hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, Vector((0,0,0)), Vector((0,0,1)))
+    fallback_normal = Vector((0,0,1))
+    if manual_axis_lock == 'X':
+        fallback_normal = Vector((1,0,0))
+    elif manual_axis_lock == 'Y':
+        fallback_normal = Vector((0,1,0))
+    elif manual_axis_lock == 'Z':
+        fallback_normal = Vector((0,0,1))
+        
+    plane_hit = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, Vector((0,0,0)), fallback_normal)
     if plane_hit:
         use_snap = getattr(context.scene.tool_settings, "use_snap", False)
         if event.ctrl: use_snap = not use_snap
@@ -1291,25 +1299,32 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
             bmesh.update_edit_mesh(self.obj.data)
             
     def add_draw_handler(self, context):
-        global draw_handler_3d
+        global draw_handler_3d, draw_handler_2d
         if draw_handler_3d is None:
             draw_handler_3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d, (self, context), 'WINDOW', 'POST_VIEW')
+        if draw_handler_2d is None:
+            draw_handler_2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, (self, context), 'WINDOW', 'POST_PIXEL')
             
     def remove_draw_handler(self, context):
-        global draw_handler_3d
+        global draw_handler_3d, draw_handler_2d
         if draw_handler_3d is not None:
             bpy.types.SpaceView3D.draw_handler_remove(draw_handler_3d, 'WINDOW')
             draw_handler_3d = None
+        if draw_handler_2d is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(draw_handler_2d, 'WINDOW')
+            draw_handler_2d = None
             
     def end_tool(self, context):
-        global is_tool_running, active_draw_tool, rect_start_pos
+        global is_tool_running, active_draw_tool, rect_start_pos, manual_axis_lock
         self.remove_draw_handler(context)
         is_tool_running = False
         active_draw_tool = None
         rect_start_pos = None
+        manual_axis_lock = None
         if hasattr(self, 'bm'):
             self.bm.free()
-        context.area.tag_redraw()
+        if getattr(context, 'area', None):
+            context.area.tag_redraw()
         
     def add_rectangle(self, pos2):
         global rect_start_pos, rect_plane_axis
@@ -1407,7 +1422,7 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
                     draw_points = [rect_start_pos, p2, mouse_pos, p4, rect_start_pos]
 
     def modal(self, context, event):
-        global mouse_pos, draw_points, rect_start_pos, rect_plane_axis
+        global mouse_pos, draw_points, rect_start_pos, rect_plane_axis, manual_axis_lock
         
         active_tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
         if active_tool and active_tool.idname != "sketchup.rectangle_tool":
@@ -1481,14 +1496,61 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
                 context.window.cursor_modal_restore()
                 self.cursor_set = False
 
+        context.area.tag_redraw()
+
         if event.type == 'MOUSEMOVE':
             self.update_mouse_pos(context, event)
-            context.area.tag_redraw()
             if not is_mouse_in_window:
                 return {'PASS_THROUGH'}
             return {'RUNNING_MODAL'}
             
-        elif event.type == 'LEFTMOUSE':
+        elif event.type == 'Z' and event.value == 'PRESS' and (event.ctrl or event.oskey):
+            if event.shift:
+                try:
+                    bpy.ops.ed.redo()
+                    self.report({'INFO'}, "Redo")
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    bpy.ops.ed.undo()
+                    self.report({'INFO'}, "Undo")
+                except RuntimeError:
+                    pass
+            
+            if hasattr(self, 'bm'):
+                self.bm.free()
+            self.bm = bmesh.from_edit_mesh(self.obj.data)
+            self.bm.verts.ensure_lookup_table()
+            
+            rect_start_pos = None
+            draw_points = []
+            manual_axis_lock = None
+            
+            self.update_mouse_pos(context, event)
+            return {'RUNNING_MODAL'}
+            
+        elif event.value == 'PRESS' and not (event.ctrl or event.oskey):
+            if event.type == 'X':
+                manual_axis_lock = 'X' if manual_axis_lock != 'X' else None
+                if rect_start_pos is not None:
+                    rect_plane_axis = Vector((1, 0, 0)) if manual_axis_lock else rect_plane_axis
+                self.update_mouse_pos(context, event)
+                return {'RUNNING_MODAL'}
+            elif event.type == 'Y':
+                manual_axis_lock = 'Y' if manual_axis_lock != 'Y' else None
+                if rect_start_pos is not None:
+                    rect_plane_axis = Vector((0, 1, 0)) if manual_axis_lock else rect_plane_axis
+                self.update_mouse_pos(context, event)
+                return {'RUNNING_MODAL'}
+            elif event.type == 'Z':
+                manual_axis_lock = 'Z' if manual_axis_lock != 'Z' else None
+                if rect_start_pos is not None:
+                    rect_plane_axis = Vector((0, 0, 1)) if manual_axis_lock else rect_plane_axis
+                self.update_mouse_pos(context, event)
+                return {'RUNNING_MODAL'}
+            
+        if event.type == 'LEFTMOUSE':
             if not disable_pass_through and not is_mouse_in_window:
                 return {'PASS_THROUGH'}
 
@@ -1502,20 +1564,27 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
                         rect_start_pos = mouse_pos.copy()
                         
                         # Determine plane axis
-                        region = context.region
-                        rv3d = context.region_data
-                        mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
-                        view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
-                        
-                        # Snap normal to closest axis
-                        best_axis = Vector((0,0,1))
-                        best_dot = 0
-                        for axis in [Vector((1,0,0)), Vector((0,1,0)), Vector((0,0,1))]:
-                            dot = abs(view_vector.dot(axis))
-                            if dot > best_dot:
-                                best_dot = dot
-                                best_axis = axis
-                        rect_plane_axis = best_axis
+                        if manual_axis_lock == 'X':
+                            rect_plane_axis = Vector((1, 0, 0))
+                        elif manual_axis_lock == 'Y':
+                            rect_plane_axis = Vector((0, 1, 0))
+                        elif manual_axis_lock == 'Z':
+                            rect_plane_axis = Vector((0, 0, 1))
+                        else:
+                            region = context.region
+                            rv3d = context.region_data
+                            mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+                            view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
+                            
+                            # Snap normal to closest axis
+                            best_axis = Vector((0,0,1))
+                            best_dot = 0
+                            for axis in [Vector((1,0,0)), Vector((0,1,0)), Vector((0,0,1))]:
+                                dot = abs(view_vector.dot(axis))
+                                if dot > best_dot:
+                                    best_dot = dot
+                                    best_axis = axis
+                            rect_plane_axis = best_axis
                         draw_points = [rect_start_pos]
                     else:
                         # Second click
@@ -1534,7 +1603,7 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
-            global draw_points, mouse_pos, is_tool_running, active_draw_tool, rect_start_pos
+            global draw_points, mouse_pos, is_tool_running, active_draw_tool, rect_start_pos, manual_axis_lock
             if is_tool_running:
                 return {'PASS_THROUGH'}
             is_tool_running = True
@@ -1543,6 +1612,7 @@ class SKETCHUP_OT_rectangle_tool(bpy.types.Operator):
             draw_points = []
             mouse_pos = None
             rect_start_pos = None
+            manual_axis_lock = None
             
             self.update_mouse_pos(context, event)
             self.add_draw_handler(context)
@@ -1612,7 +1682,388 @@ class SKETCHUP_PT_debug_panel(bpy.types.Panel):
         layout.prop(props, "show_hud_text")
         layout.prop(props, "disable_pass_through")
 
+import bpy
+import bmesh
+import gpu
+from gpu_extras.batch import batch_for_shader
+from mathutils import Vector, geometry
+from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d, location_3d_to_region_2d
+
+# Globals for Push/Pull tool
+push_pull_hover_face_index = None
+push_pull_active_face_index = None
+push_pull_start_3d_pt = None
+push_pull_face_normal = None
+push_pull_start_co = []
+push_pull_extruded_verts = []
+push_pull_start_mouse_pos = None
+push_pull_drag_state = 0 # 0=none, 1=click-drag, 2=click-release-move
+push_pull_typed_length = ""
+
+def draw_callback_3d_push_pull(self, context):
+    global push_pull_hover_face_index, push_pull_active_face_index
+    face_idx = push_pull_active_face_index if push_pull_active_face_index is not None else push_pull_hover_face_index
+    if face_idx is None:
+        return
+    if not hasattr(self, 'bm') or not self.obj:
+        return
+        
+    try:
+        shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
+    except ValueError:
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        
+    try:
+        self.bm.faces.ensure_lookup_table()
+        if face_idx < len(self.bm.faces):
+            f = self.bm.faces[face_idx]
+            coords = [self.obj.matrix_world @ v.co for v in f.verts]
+            if len(coords) < 3: return
+            
+            # Subdivide polygons into triangles for TRI_FAN
+            gpu.state.blend_set('ALPHA')
+            gpu.state.depth_test_set('LESS_EQUAL')
+            
+            from gpu_extras.batch import batch_for_shader
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": coords})
+            shader.bind()
+            shader.uniform_float("color", (0.0, 0.5, 1.0, 0.3))
+            batch.draw(shader)
+            
+            # outline
+            gpu.state.line_width_set(2.0)
+            batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": coords})
+            shader.uniform_float("color", (0.0, 0.5, 1.0, 1.0))
+            batch_outline.draw(shader)
+            gpu.state.line_width_set(1.0)
+            
+            gpu.state.depth_test_set('NONE')
+            gpu.state.blend_set('NONE')
+    except Exception as e:
+        print(f"Error drawing push/pull highlight: {e}")
+
+class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
+    bl_idname = "sketchup.push_pull_tool"
+    bl_label = "SketchUp Push/Pull Tool"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def setup_bmesh(self, context):
+        if context.active_object and context.active_object.type == 'MESH':
+            self.obj = context.active_object
+        else:
+            return False
+            
+        if self.obj.mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+            
+        self.bm = bmesh.from_edit_mesh(self.obj.data)
+        self.bm.verts.ensure_lookup_table()
+        self.bm.faces.ensure_lookup_table()
+        return True
+        
+    def add_draw_handler(self, context):
+        if not hasattr(self, 'draw_handler_3d') or self.draw_handler_3d is None:
+            self.draw_handler_3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d_push_pull, (self, context), 'WINDOW', 'POST_VIEW')
+            
+    def remove_draw_handler(self, context):
+        if hasattr(self, 'draw_handler_3d') and self.draw_handler_3d is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self.draw_handler_3d, 'WINDOW')
+            self.draw_handler_3d = None
+            
+    def end_tool(self, context):
+        global push_pull_hover_face_index, push_pull_active_face_index
+        self.remove_draw_handler(context)
+        push_pull_hover_face_index = None
+        push_pull_active_face_index = None
+        if hasattr(self, 'bm'):
+            self.bm.free()
+        if getattr(context, 'area', None):
+            context.area.tag_redraw()
+            
+    def update_hover(self, context, event):
+        global push_pull_hover_face_index
+        region = context.region
+        rv3d = context.region_data
+        mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+        ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_coord)
+        view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
+        
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, normal, index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, view_vector)
+        
+        if hit and obj == self.obj:
+            push_pull_hover_face_index = index
+        else:
+            push_pull_hover_face_index = None
+
+    def modal(self, context, event):
+        global push_pull_hover_face_index, push_pull_active_face_index, push_pull_start_3d_pt
+        global push_pull_face_normal, push_pull_start_co, push_pull_extruded_verts
+        global push_pull_start_mouse_pos, push_pull_drag_state, push_pull_typed_length
+        
+        active_tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+        if active_tool and active_tool.idname != "sketchup.push_pull_tool":
+            self.end_tool(context)
+            return {'FINISHED'}
+
+        is_mouse_in_window = True
+        props = getattr(context.scene, "sketchup_debug", None)
+        disable_pass_through = props and props.disable_pass_through
+
+        if event.mouse_x < context.area.x or event.mouse_x > context.area.x + context.area.width or \
+           event.mouse_y < context.area.y or event.mouse_y > context.area.y + context.area.height:
+            is_mouse_in_window = False
+        elif not disable_pass_through:
+            for region in context.area.regions:
+                if region.type in {'UI', 'TOOLS', 'HEADER', 'FOOTER', 'TOOL_HEADER'}:
+                    if region.x <= event.mouse_x <= region.x + region.width and \
+                       region.y <= event.mouse_y <= region.y + region.height:
+                        is_mouse_in_window = False
+                        break
+                        
+        if is_mouse_in_window and getattr(context.space_data, 'show_gizmo_navigate', False):
+            ui_scale = 1.0
+            use_region_overlap = False
+            if hasattr(context, 'preferences'):
+                if hasattr(context.preferences, 'view') and hasattr(context.preferences.view, 'ui_scale'):
+                    ui_scale = context.preferences.view.ui_scale
+                if hasattr(context.preferences, 'system'):
+                    use_region_overlap = getattr(context.preferences.system, 'use_region_overlap', False)
+            
+            axis_gizmo_width = 250 * ui_scale
+            axis_gizmo_height = 300 * ui_scale
+            
+            nav_buttons_width = 120 * ui_scale
+            nav_buttons_height = 450 * ui_scale
+            nav_buttons_top = 160 * ui_scale
+
+            ui_region_width = 0
+            if use_region_overlap:
+                for r in context.area.regions:
+                    if r.type == 'UI' and r.width > 1:
+                        ui_region_width = r.width
+                        break
+            
+            for region in context.area.regions:
+                if region.type == 'WINDOW':
+                    right_edge = region.width - ui_region_width
+                    mouse_x = event.mouse_x - region.x
+                    mouse_y = event.mouse_y - region.y
+                    
+                    axis_x = right_edge - axis_gizmo_width
+                    axis_y = region.height - axis_gizmo_height
+                    
+                    nav_top_y = region.height - nav_buttons_top
+                    nav_bottom_y = nav_top_y - nav_buttons_height
+                    nav_x = right_edge - nav_buttons_width
+                    
+                    is_over_axis = (mouse_x > axis_x) and (mouse_y > axis_y)
+                    is_over_nav = (mouse_x > nav_x) and (nav_bottom_y < mouse_y < nav_top_y)
+                    
+                    if not disable_pass_through and (is_over_axis or is_over_nav):
+                        is_mouse_in_window = False
+                    break
+
+        context.area.tag_redraw()
+
+        if event.type == 'MOUSEMOVE':
+            if push_pull_active_face_index is None:
+                if is_mouse_in_window:
+                    self.update_hover(context, event)
+                else:
+                    push_pull_hover_face_index = None
+                
+                if not is_mouse_in_window:
+                    return {'PASS_THROUGH'}
+            else:
+                # We are dragging
+                region = context.region
+                rv3d = context.region_data
+                mouse_coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+                ray_origin = region_2d_to_origin_3d(region, rv3d, mouse_coord)
+                view_vector = region_2d_to_vector_3d(region, rv3d, mouse_coord)
+                
+                # Intersect ray with a plane parallel to the view plane, passing through start point
+                view_plane_normal = -rv3d.view_matrix.inverted().to_3x3().col[2]
+                hit_pt = geometry.intersect_line_plane(ray_origin, ray_origin + view_vector * 10000, push_pull_start_3d_pt, view_plane_normal)
+                
+                if hit_pt:
+                    delta_3d = hit_pt - push_pull_start_3d_pt
+                    # Project delta onto the face normal to get distance
+                    dist = delta_3d.dot(push_pull_face_normal)
+                    
+                    if push_pull_typed_length:
+                        try:
+                            dist = float(push_pull_typed_length)
+                        except ValueError:
+                            pass
+                            
+                    # Update verts
+                    for i, v in enumerate(push_pull_extruded_verts):
+                        v.co = push_pull_start_co[i] + push_pull_face_normal * dist
+                        
+                    self.bm.normal_update()
+                    bmesh.update_edit_mesh(self.obj.data)
+
+            return {'RUNNING_MODAL'}
+            
+        elif event.type == 'LEFTMOUSE':
+            if not disable_pass_through and not is_mouse_in_window and push_pull_active_face_index is None:
+                return {'PASS_THROUGH'}
+
+            if event.value == 'PRESS':
+                if push_pull_active_face_index is None:
+                    if push_pull_hover_face_index is not None:
+                        bpy.ops.ed.undo_push(message="SketchUp Push/Pull Start")
+                        
+                        push_pull_active_face_index = push_pull_hover_face_index
+                        self.bm.faces.ensure_lookup_table()
+                        face = self.bm.faces[push_pull_active_face_index]
+                        
+                        push_pull_face_normal = self.obj.matrix_world.to_3x3() @ face.normal.copy()
+                        push_pull_face_normal.normalize()
+                        
+                        push_pull_start_3d_pt = self.obj.matrix_world @ face.calc_center_median()
+                        
+                        # Extrude
+                        res = bmesh.ops.extrude_face_region(self.bm, geom=[face])
+                        new_faces = [e for e in res['geom'] if isinstance(e, bmesh.types.BMFace)]
+                        extruded_face = new_faces[0] if new_faces else None
+                        
+                        # The newly extruded face becomes the active face for movement
+                        if extruded_face:
+                            push_pull_extruded_verts = extruded_face.verts[:]
+                        else:
+                            push_pull_extruded_verts = []
+                        push_pull_start_co = [v.co.copy() for v in push_pull_extruded_verts]
+                        
+                        bmesh.update_edit_mesh(self.obj.data)
+                        
+                        push_pull_start_mouse_pos = Vector((event.mouse_x, event.mouse_y))
+                        push_pull_drag_state = 1 # click-drag
+                        push_pull_typed_length = ""
+                else:
+                    # Second click to finish
+                    push_pull_active_face_index = None
+                    push_pull_drag_state = 0
+                    push_pull_typed_length = ""
+                    bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
+                    self.update_hover(context, event)
+                    
+            elif event.value == 'RELEASE':
+                if push_pull_active_face_index is not None and push_pull_drag_state == 1:
+                    current_mouse = Vector((event.mouse_x, event.mouse_y))
+                    if (current_mouse - push_pull_start_mouse_pos).length > 5:
+                        # They dragged and released, finish!
+                        push_pull_active_face_index = None
+                        push_pull_drag_state = 0
+                        push_pull_typed_length = ""
+                        bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
+                        self.update_hover(context, event)
+                    else:
+                        # Click-release, switch to move mode
+                        push_pull_drag_state = 2
+                        
+            return {'RUNNING_MODAL'}
+            
+        elif event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            if push_pull_active_face_index is not None:
+                push_pull_active_face_index = None
+                push_pull_drag_state = 0
+                push_pull_typed_length = ""
+                bpy.ops.ed.undo_push(message="SketchUp Push/Pull End")
+                self.update_hover(context, event)
+            return {'RUNNING_MODAL'}
+            
+        elif event.type == 'BACK_SPACE' and event.value == 'PRESS':
+            push_pull_typed_length = push_pull_typed_length[:-1]
+            return {'RUNNING_MODAL'}
+            
+        elif event.unicode and event.unicode in "0123456789.-" and event.value == 'PRESS':
+            push_pull_typed_length += event.unicode
+            return {'RUNNING_MODAL'}
+            
+        elif event.type == 'ESC' and event.value == 'PRESS':
+            if push_pull_active_face_index is not None:
+                bpy.ops.ed.undo()
+                if hasattr(self, 'bm'):
+                    self.bm.free()
+                self.bm = bmesh.from_edit_mesh(self.obj.data)
+                self.bm.verts.ensure_lookup_table()
+                self.bm.faces.ensure_lookup_table()
+                push_pull_active_face_index = None
+                push_pull_drag_state = 0
+                push_pull_typed_length = ""
+            else:
+                self.end_tool(context)
+                return {'FINISHED'}
+            return {'RUNNING_MODAL'}
+            
+        elif event.type == 'Z' and event.value == 'PRESS' and (event.ctrl or event.oskey):
+            if event.shift:
+                try:
+                    bpy.ops.ed.redo()
+                    self.report({'INFO'}, "Redo")
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    bpy.ops.ed.undo()
+                    self.report({'INFO'}, "Undo")
+                except RuntimeError:
+                    pass
+            
+            if hasattr(self, 'bm'):
+                self.bm.free()
+            self.bm = bmesh.from_edit_mesh(self.obj.data)
+            self.bm.verts.ensure_lookup_table()
+            self.bm.faces.ensure_lookup_table()
+            
+            push_pull_active_face_index = None
+            push_pull_drag_state = 0
+            push_pull_typed_length = ""
+            
+            self.update_hover(context, event)
+            return {'RUNNING_MODAL'}
+            
+        return {'PASS_THROUGH'}
+
+    def invoke(self, context, event):
+        if context.space_data.type == 'VIEW_3D':
+            if not self.setup_bmesh(context):
+                self.report({'WARNING'}, "No active mesh object")
+                return {'CANCELLED'}
+                
+            global push_pull_hover_face_index, push_pull_active_face_index, push_pull_typed_length
+            push_pull_hover_face_index = None
+            push_pull_active_face_index = None
+            push_pull_typed_length = ""
+            
+            self.update_hover(context, event)
+            self.add_draw_handler(context)
+
+            context.window_manager.modal_handler_add(self)
+            context.workspace.status_text_set("Hover to select face. Click and drag to push/pull.")
+            return {'RUNNING_MODAL'}
+        else:
+            return {'CANCELLED'}
+
+class SketchUpPushPullTool(bpy.types.WorkSpaceTool):
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'EDIT_MESH'
+    bl_idname = "sketchup.push_pull_tool"
+    bl_label = "SketchUp Push/Pull"
+    bl_description = "Extrude faces like SketchUp Push/Pull"
+    bl_icon = "ops.mesh.extrude_region_move"
+    bl_cursor = 'CROSSHAIR'
+    bl_widget = None
+    bl_keymap = (
+        ("sketchup.push_pull_tool", {"type": 'MOUSEMOVE', "value": 'ANY', "any": True}, None),
+        ("sketchup.push_pull_tool", {"type": 'LEFTMOUSE', "value": 'PRESS', "any": True}, None),
+    )
+
 classes = (
+    SKETCHUP_OT_push_pull_tool,
     SKETCHUP_OT_rectangle_tool,
     SKETCHUP_OT_draw_tool,
     SKETCHUP_OT_add_point,
@@ -1626,7 +2077,9 @@ def register():
     bpy.types.Scene.sketchup_debug = bpy.props.PointerProperty(type=SketchUpDebugProperties)
     bpy.utils.register_tool(SketchUpDrawTool, after={"builtin.measure"})
     bpy.utils.register_tool(SketchUpRectangleTool, after={"sketchup.draw_tool_v2"})
+    bpy.utils.register_tool(SketchUpPushPullTool, after={"sketchup.rectangle_tool"})
     bpy._sketchup_rect_tool_class = SketchUpRectangleTool
+    bpy._sketchup_pushpull_tool_class = SketchUpPushPullTool
     bpy._sketchup_tool_class = SketchUpDrawTool
 
 def unregister():
@@ -1644,6 +2097,11 @@ def unregister():
     try:
         if old_tool: bpy.utils.unregister_tool(old_tool)
         else: bpy.utils.unregister_tool(SketchUpDrawTool)
+    except Exception: pass
+    old_pushpull_tool = getattr(bpy, "_sketchup_pushpull_tool_class", None)
+    try:
+        if old_pushpull_tool: bpy.utils.unregister_tool(old_pushpull_tool)
+        else: bpy.utils.unregister_tool(SketchUpPushPullTool)
     except Exception: pass
     old_rect_tool = getattr(bpy, "_sketchup_rect_tool_class", None)
     try:
