@@ -1717,20 +1717,44 @@ def draw_callback_3d_push_pull(self, context):
         self.bm.faces.ensure_lookup_table()
         if face_idx < len(self.bm.faces):
             f = self.bm.faces[face_idx]
-            coords = [self.obj.matrix_world @ v.co for v in f.verts]
-            if len(coords) < 3: return
             
-            # Subdivide polygons into triangles for TRI_FAN
+            # Offset slightly along normal to prevent Z-fighting
+            face_normal_world = self.obj.matrix_world.to_3x3() @ f.normal
+            face_normal_world.normalize()
+            
+            # Check if looking at the back of the face
+            if context.region_data:
+                view_vec = -context.region_data.view_matrix.inverted().to_3x3().col[2]
+                if face_normal_world.dot(view_vec) > 0:
+                    offset = face_normal_world * -0.002
+                else:
+                    offset = face_normal_world * 0.002
+            else:
+                offset = face_normal_world * 0.002
+            
+            # Get triangulated coordinates for rendering concave faces
+            triangles = self.bm.calc_loop_triangles()
+            face_tris = [tri for tri in triangles if tri[0].face.index == face_idx]
+            
+            tri_coords = []
+            for tri in face_tris:
+                for loop in tri:
+                    tri_coords.append((self.obj.matrix_world @ loop.vert.co) + offset)
+                    
+            if not tri_coords: return
+            
+            # Subdivide polygons into triangles for correct rendering
             gpu.state.blend_set('ALPHA')
             gpu.state.depth_test_set('LESS_EQUAL')
             
             from gpu_extras.batch import batch_for_shader
-            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": coords})
+            batch = batch_for_shader(shader, 'TRIS', {"pos": tri_coords})
             shader.bind()
             shader.uniform_float("color", (0.0, 0.5, 1.0, 0.3))
             batch.draw(shader)
             
             # outline
+            coords = [(self.obj.matrix_world @ v.co) + offset for v in f.verts]
             gpu.state.line_width_set(2.0)
             batch_outline = batch_for_shader(shader, 'LINE_LOOP', {"pos": coords})
             shader.uniform_float("color", (0.0, 0.5, 1.0, 1.0))
