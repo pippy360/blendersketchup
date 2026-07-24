@@ -1201,6 +1201,7 @@ rect_start_pos = None
 rect_plane_axis = None # The normal axis of the plane (X, Y, or Z)
 
 def get_mouse_3d_pos_rect(context, event):
+    global constraint_snap_point
     # Determine intersection with a plane
     region = context.region
     rv3d = context.region_data
@@ -1232,8 +1233,10 @@ def get_mouse_3d_pos_rect(context, event):
             if has_geo_snap:
                 # Snap to geometry but project onto our plane
                 proj_dist = (geo_snap_pos - rect_start_pos).dot(rect_plane_axis)
+                constraint_snap_point = geo_snap_pos
                 return geo_snap_pos - rect_plane_axis * proj_dist, snap_type
             
+            constraint_snap_point = None
             # Grid snapping
             use_snap = getattr(context.scene.tool_settings, "use_snap", False)
             if event.ctrl: use_snap = not use_snap
@@ -1251,8 +1254,10 @@ def get_mouse_3d_pos_rect(context, event):
             
     # We don't have a start pos, or we don't have an axis yet
     if has_geo_snap:
+        constraint_snap_point = geo_snap_pos
         return geo_snap_pos, snap_type
         
+    constraint_snap_point = None
     # Default to XY plane (ground) if no snap
     fallback_normal = Vector((0,0,1))
     if manual_axis_lock == 'X':
