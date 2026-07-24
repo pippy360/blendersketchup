@@ -1975,26 +1975,33 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                         # Find edges to dissolve for seamless extrusion
                         local_normal = face.normal.copy()
                         edges_to_dissolve = []
+                        is_full_face = True
                         for edge in face.edges:
-                            if len(edge.link_faces) == 2:
+                            if len(edge.link_faces) != 2:
+                                is_full_face = False
+                            else:
                                 adj_face = edge.link_faces[0] if edge.link_faces[0] != face else edge.link_faces[1]
-                                if abs(adj_face.normal.dot(local_normal)) < 0.001:
+                                if abs(adj_face.normal.dot(local_normal)) > 0.999:
+                                    is_full_face = False
+                                elif abs(adj_face.normal.dot(local_normal)) < 0.001:
                                     edges_to_dissolve.append(edge)
                         
-                        # Extrude
-                        res = bmesh.ops.extrude_face_region(self.bm, geom=[face])
-                        new_faces = [e for e in res['geom'] if isinstance(e, bmesh.types.BMFace)]
-                        extruded_face = new_faces[0] if new_faces else None
-                        
-                        # Delete the original face to ensure edges are manifold (2 faces max)
-                        # so that bmesh.ops.dissolve_edges can successfully merge the coplanar side walls.
-                        if face.is_valid:
-                            bmesh.ops.delete(self.bm, geom=[face], context='FACES_ONLY')
-                        
-                        # Dissolve redundant edges
-                        valid_edges = [e for e in edges_to_dissolve if e.is_valid]
-                        if valid_edges:
-                            bmesh.ops.dissolve_edges(self.bm, edges=valid_edges)
+                        if is_full_face:
+                            extruded_face = face
+                        else:
+                            # Extrude
+                            res = bmesh.ops.extrude_face_region(self.bm, geom=[face])
+                            new_faces = [e for e in res['geom'] if isinstance(e, bmesh.types.BMFace)]
+                            extruded_face = new_faces[0] if new_faces else None
+                            
+                            # Delete the original face to ensure edges are manifold
+                            if face.is_valid:
+                                bmesh.ops.delete(self.bm, geom=[face], context='FACES_ONLY')
+                            
+                            # Dissolve redundant edges
+                            valid_edges = [e for e in edges_to_dissolve if e.is_valid]
+                            if valid_edges:
+                                bmesh.ops.dissolve_edges(self.bm, edges=valid_edges)
                         
                         # The newly extruded face becomes the active face for movement
                         if extruded_face:
