@@ -2007,6 +2007,8 @@ class SKETCHUP_OT_push_pull_tool(bpy.types.Operator):
                             for adj_face in edge.link_faces:
                                 if adj_face != face:
                                     dot_val = abs(adj_face.normal.dot(local_normal))
+                                    if dot_val > 0.999:
+                                        is_full_face = False
                                     if dot_val < 0.001:
                                         edges_to_dissolve.append(edge)
                                         
